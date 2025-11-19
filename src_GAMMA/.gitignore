@@ -1,5 +1,6 @@
 # Ignore local data & zip files
 data/
 zip/
+tapping-heatmaps/
 .hf_downloads/
 *.zip

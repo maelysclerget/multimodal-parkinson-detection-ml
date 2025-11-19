@@ -1,9 +1,10 @@
+#%%
 import pandas as pd 
 
 #%%
-
-# Load the original demographics survey data with healthCode and professional-diagnosis columns
+# Load the original demographics survey data with healthCode and professional-diagnosis columns and remove rows with NA values in professional-diagnosis
 og_df = pd.read_csv('src_GAMMA/data/data_paired/csv/Demographics_Survey.csv')
+
 og_df_copy = og_df.copy()
 
 columns_to_keep = ['healthCode', 'professional-diagnosis']
