@@ -176,11 +176,12 @@ def analyze_wav_directory(directory, pattern="**/*.wav", max_files=None):
             print(f"  ✗ Multiple channel configurations found")
     
     # Save detailed report to CSV
-    output_file = os.path.join(directory, "wav_inspection_report.csv")
+    output_dir = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model"
+    output_file = os.path.join(output_dir, "wav_inspection_report.csv")
     df.to_csv(output_file, index=False)
     
     # Also save summary statistics to a separate CSV
-    summary_file = os.path.join(directory, "wav_inspection_summary.csv")
+    summary_file = os.path.join(output_dir, "wav_inspection_summary.csv")
     if (df['status'] == 'success').sum() > 0:
         df_success = df[df['status'] == 'success']
         
@@ -242,7 +243,7 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         directory = sys.argv[1]
     else:
-        directory = "/mloscratch/users/gnahas/data"
+        directory = "/mloscratch/users/gnahas/data/wav"
     
     max_files = None
     if len(sys.argv) > 2:

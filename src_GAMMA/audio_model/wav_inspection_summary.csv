@@ -1,0 +1,16 @@
+Metric,Value
+Total Files,47660
+Successful,47660
+Failed,0
+Mean Duration (sec),10.04
+Std Duration (sec),0.01
+Min Duration (sec),9.99
+Max Duration (sec),10.07
+Median Duration (sec),10.04
+Duration CV (%),0.15
+Unique Sampling Rates,1
+Most Common Sampling Rate (Hz),44100
+Unique Channels,1
+Most Common Channels,1
+Mean File Size (MB),0.84
+Total Size (GB),39.31
