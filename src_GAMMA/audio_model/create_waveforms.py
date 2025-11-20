@@ -34,16 +34,21 @@ def load_and_normalize_waveform(wav_path):
         Normalized waveform array (values in [-1, 1])
         Sample rate
         
+    What is stored in the .npy file:
+        - A 1D NumPy array of float32 values
+        - Each value represents the amplitude at a specific time point
+        - Values are normalized to the range [-1.0, 1.0]
+        - Array length = duration_seconds × sample_rate
+        - Example: 10-second audio at 16000 Hz = array of 160,000 values
+        
     Normalization:
         - Waveform is loaded and automatically normalized by soundfile to [-1, 1]
-        - If stereo, converts to mono by averaging channels
+        - Further normalized by dividing by max absolute value
+        - All files are mono (single channel)
     """
     # Load audio - soundfile automatically normalizes to [-1, 1]
+    # All files are mono, so waveform is a 1D array
     waveform, sample_rate = sf.read(wav_path, dtype='float32')
-    
-    # If stereo, convert to mono by averaging channels
-    if len(waveform.shape) > 1:
-        waveform = np.mean(waveform, axis=1)
     
     # Ensure normalization to [-1, 1] range
     max_val = np.abs(waveform).max()
@@ -167,15 +172,22 @@ def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=2
     
     # Sample files if needed
     files_to_process = []
+    sampled_healthcodes = 0
     
     for healthCode, file_list in healthcode_to_files.items():
         if len(file_list) > max_records_per_patient:
             # Randomly sample max_records_per_patient records
             sampled = random.sample(file_list, max_records_per_patient)
             files_to_process.extend(sampled)
+            sampled_healthcodes += 1
+            if sampled_healthcodes <= 5:  # Show first 5 examples
+                print(f"  HealthCode {healthCode[:8]}... has {len(file_list)} records → sampling {max_records_per_patient}")
         else:
             # Use all records
             files_to_process.extend(file_list)
+    
+    if sampled_healthcodes > 5:
+        print(f"  ... and {sampled_healthcodes - 5} more healthCodes were sampled")
     
     # Add files without healthCode (process all of them)
     files_to_process.extend(files_without_healthcode)
@@ -251,5 +263,7 @@ if __name__ == "__main__":
         process_single_wav_example(example_wav, OUTPUT_DIR)
         print()
     
-    # Process all files with limits
+    # Uncomment the line below to process all files
+    # (Comment it out to only process the single example file)
     process_all_wavs_with_limit(INPUT_DIR, OUTPUT_DIR, MAX_RECORDS_PER_PATIENT)
+    
