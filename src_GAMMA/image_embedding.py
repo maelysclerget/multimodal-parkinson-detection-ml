@@ -3,7 +3,6 @@ import timm
 from timm.data import resolve_data_config
 from timm.data.transforms_factory import create_transform
 from PIL import Image
-import numpy as np
 from typing import List, Union
 from pathlib import Path
 
@@ -16,7 +15,7 @@ class ImageEmbeddingExtractor:
         Args:
             model_name: Name of the Timm model to use (default: 'resnet50')
             pretrained: Whether to use pretrained weights (default: True)
-            verbose: Whether the function shoudl output verbal tracing of constructor execution (default: True)
+            verbose: Whether the constructor should output verbal execution tracing (default: True)
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
@@ -36,9 +35,10 @@ class ImageEmbeddingExtractor:
         config = resolve_data_config({}, model=self.model)
         self.transform = create_transform(**config)
         
-        print(f"Model: {model_name}")
-        print(f"Device: {self.device}")
-        print(f"Embedding dimension: {self.embedding_dim}")
+        if verbose:
+            print(f"Model: {model_name}")
+            print(f"Device: {self.device}")
+            print(f"Embedding dimension: {self.embedding_dim}")
     
     def load_and_preprocess_image(self, image_path: Union[str, Path]) -> torch.Tensor:
         """
@@ -62,7 +62,7 @@ class ImageEmbeddingExtractor:
         Args:
             image_paths: List of paths to image files
             batch_size: Number of images to process at once (default: 32)
-            verbose: Whether the function shoudl output verbal tracing of method execution (default: True)
+            verbose: Whether the method should output verbal execution tracing (default: True)
             
         Returns:
             PyTorch tensor of shape (num_images, embedding_dim)
