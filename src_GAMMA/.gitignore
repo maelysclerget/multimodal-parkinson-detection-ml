@@ -3,3 +3,8 @@ data/
 zip/
 .hf_downloads/
 *.zip
+
+# Testing images
+download.png
+images.jpeg
+x1080.jpeg
