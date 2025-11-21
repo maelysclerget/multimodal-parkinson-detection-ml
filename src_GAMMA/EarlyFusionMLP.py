@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from typing import Optional
 from torch.utils.data import DataLoader, TensorDataset
-from sklearn.metrics import accuracy_score, roc_auc_score, confusion_matrix
+from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
 
 
 class EarlyFusionMLP(nn.Module):
@@ -142,17 +142,11 @@ class EarlyFusionMLP(nn.Module):
                 optimizer.step()
                 
                 epoch_loss += loss.item() * len(lbl)
-                # all_preds.extend(torch.argmax(logits, dim=1).cpu().numpy())
-                # all_labels.extend(lbl.cpu().numpy())
-                all_preds.extend(torch.argmax(logits, dim=1).cpu())
-                all_labels.extend(lbl.cpu())
-            
-            # all_preds = torch.cat(all_preds)
-            # all_labels = torch.cat(all_labels)
+                all_preds.extend(torch.argmax(logits, dim=1).cpu().numpy())
+                all_labels.extend(lbl.cpu().numpy())
             
             epoch_loss /= len(dataset)
             epoch_acc = accuracy_score(all_labels, all_preds)
-            # epoch_acc = (all_preds == all_labels).float().mean().item()
             
             self.train_loss_history.append(epoch_loss)
             self.train_acc_history.append(epoch_acc)
@@ -163,9 +157,40 @@ class EarlyFusionMLP(nn.Module):
         if verbose:
             print(f"Training complete. Final - Loss: {self.train_loss_history[-1]:.4f}, "
                   f"Acc: {self.train_acc_history[-1]:.4f}")
+            
+    def test(self, test_image_embeds: torch.Tensor, test_audio_embeds: torch.Tensor,
+            test_labels: torch.Tensor):
+        """
+        Evaluate the model on test data and return a dictionary of metrics.
+        
+        Args:
+            test_image_embeds: Image embeddings of shape (N, image_embed_dim)
+            test_audio_embeds: Audio embeddings of shape (N, audio_embed_dim)
+            test_labels: Ground truth labels of shape (N,)
+        
+        Returns:
+            Dictionary containing test metrics (loss, accuracy, F1, confusion matrix, ROC AUC, ROC curve)
+        """
+
+        self.eval()
+        with torch.no_grad():
+            output = self.forward(test_image_embeds, test_audio_embeds)
+            y_true  = test_labels.numpy()
+            y_pred  = self.predict(test_image_embeds, test_audio_embeds).numpy()
+            y_score = self.predict_proba(test_image_embeds, test_audio_embeds).numpy()
+
+        result_metrics = {
+            "test_loss": nn.CrossEntropyLoss()(output, y_true).item(),
+            "test_acc": accuracy_score(y_true, y_pred),
+            "test_f1": f1_score(y_true, y_pred),
+            "test_conf_mat": confusion_matrix(y_true, y_pred),
+            "test_roc_auc": roc_auc_score(y_true, y_score[:, 1]),
+            "test_roc_curve": roc_curve(y_true, y_score[:, 1])
+        }
+
+        return result_metrics
 
 
-# Example usage
 if __name__ == "__main__":
     # Initialize model
     model = EarlyFusionMLP(
