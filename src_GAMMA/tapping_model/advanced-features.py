@@ -5,7 +5,7 @@ import json
 from scipy import stats
 
 
-paired_hc_df = pd.read_csv('/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/paired_healthcode.csv')
+paired_hc_df = pd.read_csv('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv')
 paired_healthcodes = set(paired_hc_df["healthCode"].unique())
 print(f"Paired healthcodes to extract: {len(paired_healthcodes)}")
 
@@ -94,6 +94,7 @@ def extract_all_advanced_features(data_dir):
             filename = json_file.stem
             parts = filename.split('_')
             health_code = parts[0] if len(parts) > 0 else "unknown"
+            trial_id = parts[1] if len(parts) > 1 else "unknown"  # Extract trial/session ID
             
             # ADDED: Filter by paired healthcodes
             if health_code not in paired_healthcodes:
@@ -102,6 +103,7 @@ def extract_all_advanced_features(data_dir):
             features = extract_advanced_features(json_file)
             if features:
                 features['healthCode'] = health_code
+                features['trial_id'] = trial_id
                 all_features.append(features)
         except Exception as e:
             continue
@@ -130,20 +132,47 @@ def aggregate_to_patient_level(features_df):
 if __name__ == "__main__":
     import re
     
-    data_dir = "src_GAMMA/data/raw_tapping"
+    data_dir = "/mloscratch/users/clerget/data/raw_tapping"
+    csv_dir = Path('/mloscratch/users/clerget/data/csv')
+    csv_dir.mkdir(parents=True, exist_ok=True)
     
     print("Extracting advanced features...")
     adv_features_df = extract_all_advanced_features(data_dir)
     
     # Save session-level features
-    adv_features_df.to_csv('src_GAMMA/data/tapping_advanced_features_session.csv', index=False)
+    adv_features_df.to_csv(csv_dir / 'tapping_advanced_features_session.csv', index=False)
     print("✓ Session-level features saved")
     
     # Aggregate to patient level
     print("\nAggregating to patient level...")
     patient_features = aggregate_to_patient_level(adv_features_df)
-
     
     # Save patient-level features
-    patient_features.to_csv('src_GAMMA/data/tapping_advanced_features_patient.csv', index=False)
+    patient_features.to_csv(csv_dir / 'tapping_advanced_features_patient.csv', index=False)
     print("✓ Patient-level features saved")
+    
+    
+    # ===== Concatenate Basic and Advanced Features =====
+    print("\n===== Concatenating Basic and Advanced Features =====")
+    
+    # Load basic features (session/trial-level)
+    basic_features_path = csv_dir / 'tapping_statistical_features.csv'
+    if basic_features_path.exists():
+        basic_features = pd.read_csv(basic_features_path)
+        
+        # Load advanced features (session/trial-level)
+        advanced_features_session = adv_features_df
+        
+        print(f"Basic features shape (sessions): {basic_features.shape}")
+        print(f"Advanced features shape (sessions): {advanced_features_session.shape}")
+        
+        # Merge on both healthCode AND trial_id at session level
+        combined_features = basic_features.merge(advanced_features_session, on=["healthCode", "trial_id"], how="inner")
+        print(f"Combined features shape: {combined_features.shape}")
+        
+        # Save combined features
+        combined_features.to_csv(csv_dir / 'tapping_combined_features_session.csv', index=False)
+        print(f"✓ Combined session-level features saved: {combined_features.shape[0]} sessions with {combined_features.shape[1]} features")
+    else:
+        print(f"⚠ Warning: Basic features not found at {basic_features_path}")
+        print("  Run data-loading.py first to generate basic features")

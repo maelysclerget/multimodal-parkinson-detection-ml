@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 from collections import defaultdict
 
-paired_hc_df = pd.read_csv('/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/paired_healthcode.csv')
+paired_hc_df = pd.read_csv('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv')
 paired_healthcodes = set(paired_hc_df["healthCode"].unique())
 print(f"Paired healthcodes to extract: {len(paired_healthcodes)}")
 
@@ -99,7 +99,7 @@ def extract_statistical_features(json_file_path):
 
 # Extract tapping features
 print("\n===== Extracting Tapping Features =====")
-data_dir = Path('/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/data/raw_tapping')
+data_dir = Path('/mloscratch/users/clerget/data/raw_tapping')
 json_files = list(data_dir.rglob("*tapping_results_json_TappingSamples.json"))
 print(f"Found {len(json_files)} tapping JSON files")
 
@@ -111,6 +111,7 @@ for json_file in json_files:
         filename = json_file.stem
         parts = filename.split('_')
         health_code = parts[0] if len(parts) > 0 else "unknown"
+        trial_id = parts[1] if len(parts) > 1 else "unknown"  # Extract trial/session ID
         
         if health_code not in paired_healthcodes:
             continue
@@ -121,6 +122,7 @@ for json_file in json_files:
             for dt, button in events:
                 sequences_data.append({
                     'healthCode': health_code,
+                    'trial_id': trial_id,
                     'delta_t': dt,
                     'button': button
                 })
@@ -129,19 +131,24 @@ for json_file in json_files:
         stats = extract_statistical_features(json_file)
         if stats is not None:
             stats['healthCode'] = health_code
+            stats['trial_id'] = trial_id
             features_data.append(stats)
 
     except Exception as e:
         print(f"Error processing {json_file}: {e}")
         continue
-    
+
+# Create csv directory if it doesn't exist
+csv_dir = Path('/mloscratch/users/clerget/data/csv')
+csv_dir.mkdir(parents=True, exist_ok=True)
+
 # Save to CSV
 if sequences_data:
     seq_df = pd.DataFrame(sequences_data)
-    seq_df.to_csv('src_GAMMA/data/tapping_event_sequences.csv', index=False)
+    seq_df.to_csv(csv_dir / 'tapping_event_sequences.csv', index=False)
     print(f"✓ Event sequences saved: {len(seq_df)} rows")
 
 if features_data:
     feat_df = pd.DataFrame(features_data)
     print(f"✓ Statistical features saved: {len(feat_df)} rows")
-    feat_df.to_csv('src_GAMMA/data/tapping_statistical_features.csv', index=False)
+    feat_df.to_csv(csv_dir / 'tapping_statistical_features.csv', index=False)
