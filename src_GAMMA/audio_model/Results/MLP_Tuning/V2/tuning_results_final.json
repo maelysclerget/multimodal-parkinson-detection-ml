@@ -1,0 +1,506 @@
+[
+  {
+    "config_id": 1,
+    "config_name": "lr0.0001_hs128-64-32_drop0.5_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.0001,
+      "hidden_sizes": [
+        128,
+        64,
+        32
+      ],
+      "dropout": 0.5,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 58.46411567624757,
+      "std_accuracy": 4.075889230487507,
+      "avg_auc": 0.6234592539795676,
+      "std_auc": 0.054904129771909733,
+      "avg_f1": 0.6298804269478756,
+      "std_f1": 0.030494779150512814,
+      "avg_sensitivity": 0.6224043715846995,
+      "std_sensitivity": 0.04072266657372371,
+      "avg_specificity": 0.5347826086956522,
+      "std_specificity": 0.09284415871331575
+    },
+    "test_patient_average": {
+      "avg_accuracy": 59.589137718215476,
+      "std_accuracy": 1.607700463417202,
+      "avg_auc": 0.6234592539795676,
+      "std_auc": 0.054904129771909733,
+      "avg_f1": 0.6612949431722577,
+      "std_f1": 0.021707329488395773
+    },
+    "test_recording_level": {
+      "avg_accuracy": 63.36329549481616,
+      "std_accuracy": 5.132987165578565,
+      "avg_auc": 0.6141874425649709,
+      "std_auc": 0.0520611172300191,
+      "avg_f1": 0.7441514857179709,
+      "std_f1": 0.04956936108682006
+    }
+  },
+  {
+    "config_id": 2,
+    "config_name": "lr0.0001_hs128-64-32_drop0.7_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.0001,
+      "hidden_sizes": [
+        128,
+        64,
+        32
+      ],
+      "dropout": 0.7,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 57.14688767413154,
+      "std_accuracy": 1.2610853821506545,
+      "avg_auc": 0.6346673794250416,
+      "std_auc": 0.032602892365149336,
+      "avg_f1": 0.6529116465863455,
+      "std_f1": 0.09596164264288543,
+      "avg_sensitivity": 0.7811475409836065,
+      "std_sensitivity": 0.2570694157679522,
+      "avg_specificity": 0.29565217391304344,
+      "std_specificity": 0.3436158227561606
+    },
+    "test_patient_average": {
+      "avg_accuracy": 58.2701463586669,
+      "std_accuracy": 1.2767243627273541,
+      "avg_auc": 0.6346673794250416,
+      "std_auc": 0.032602892365149336,
+      "avg_f1": 0.6755387789333419,
+      "std_f1": 0.07117324013048212
+    },
+    "test_recording_level": {
+      "avg_accuracy": 70.25522057148606,
+      "std_accuracy": 14.166032696217405,
+      "avg_auc": 0.6533295945355451,
+      "std_auc": 0.02112268894284227,
+      "avg_f1": 0.7910028584968233,
+      "std_f1": 0.14250485145431913
+    }
+  },
+  {
+    "config_id": 3,
+    "config_name": "lr0.0001_hs256-128-64_drop0.5_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.0001,
+      "hidden_sizes": [
+        256,
+        128,
+        64
+      ],
+      "dropout": 0.5,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 59.7813436783636,
+      "std_accuracy": 3.1773264237373757,
+      "avg_auc": 0.627952007602756,
+      "std_auc": 0.03688950212054099,
+      "avg_f1": 0.6415705673406074,
+      "std_f1": 0.04851842348947078,
+      "avg_sensitivity": 0.6424043715846995,
+      "std_sensitivity": 0.08855416762850608,
+      "avg_specificity": 0.5391304347826087,
+      "std_specificity": 0.06929294543699663
+    },
+    "test_patient_average": {
+      "avg_accuracy": 59.77252689120085,
+      "std_accuracy": 1.6466737402178009,
+      "avg_auc": 0.627952007602756,
+      "std_auc": 0.03688950212054099,
+      "avg_f1": 0.658213731113713,
+      "std_f1": 0.032678830229015854
+    },
+    "test_recording_level": {
+      "avg_accuracy": 65.22456967931363,
+      "std_accuracy": 6.35883759488536,
+      "avg_auc": 0.6476750519680863,
+      "std_auc": 0.05697984513156423,
+      "avg_f1": 0.7559435334135152,
+      "std_f1": 0.060351130561869346
+    }
+  },
+  {
+    "config_id": 4,
+    "config_name": "lr0.0001_hs256-128-64_drop0.7_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.0001,
+      "hidden_sizes": [
+        256,
+        128,
+        64
+      ],
+      "dropout": 0.7,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 58.09557397284429,
+      "std_accuracy": 5.616971319340036,
+      "avg_auc": 0.6084687574245664,
+      "std_auc": 0.03487502571580984,
+      "avg_f1": 0.6519866880844953,
+      "std_f1": 0.09630265876641121,
+      "avg_sensitivity": 0.7332786885245902,
+      "std_sensitivity": 0.2044988353439249,
+      "avg_specificity": 0.3826086956521739,
+      "std_specificity": 0.22907721517077376
+    },
+    "test_patient_average": {
+      "avg_accuracy": 59.58737436078293,
+      "std_accuracy": 3.788455973767108,
+      "avg_auc": 0.6084687574245664,
+      "std_auc": 0.03487502571580984,
+      "avg_f1": 0.6885600542884706,
+      "std_f1": 0.060837630769997646
+    },
+    "test_recording_level": {
+      "avg_accuracy": 68.34937322346954,
+      "std_accuracy": 8.971758943736367,
+      "avg_auc": 0.6212189038402653,
+      "std_auc": 0.04111177178971814,
+      "avg_f1": 0.7814035750301763,
+      "std_f1": 0.08998224790902999
+    }
+  },
+  {
+    "config_id": 5,
+    "config_name": "lr0.0005_hs128-64-32_drop0.5_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.0005,
+      "hidden_sizes": [
+        128,
+        64,
+        32
+      ],
+      "dropout": 0.5,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 59.033680126961734,
+      "std_accuracy": 3.8327319169817806,
+      "avg_auc": 0.6302981705868378,
+      "std_auc": 0.042294277260344085,
+      "avg_f1": 0.6298478211065344,
+      "std_f1": 0.054614588401694156,
+      "avg_sensitivity": 0.6225683060109289,
+      "std_sensitivity": 0.09404506528784841,
+      "avg_specificity": 0.5478260869565217,
+      "std_specificity": 0.08408295480788573
+    },
+    "test_patient_average": {
+      "avg_accuracy": 59.21883265737965,
+      "std_accuracy": 3.494792930682983,
+      "avg_auc": 0.6302981705868378,
+      "std_auc": 0.042294277260344085,
+      "avg_f1": 0.657932504739931,
+      "std_f1": 0.035614341949690174
+    },
+    "test_recording_level": {
+      "avg_accuracy": 64.18265642805878,
+      "std_accuracy": 6.376215499824534,
+      "avg_auc": 0.6303912317195932,
+      "std_auc": 0.06592605764723956,
+      "avg_f1": 0.7502579412205556,
+      "std_f1": 0.057899899887163854
+    }
+  },
+  {
+    "config_id": 6,
+    "config_name": "lr0.0005_hs128-64-32_drop0.7_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.0005,
+      "hidden_sizes": [
+        128,
+        64,
+        32
+      ],
+      "dropout": 0.7,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 55.625110209839534,
+      "std_accuracy": 4.71287748101287,
+      "avg_auc": 0.6153932050368258,
+      "std_auc": 0.03621617983393258,
+      "avg_f1": 0.617533070533184,
+      "std_f1": 0.1463848221926363,
+      "avg_sensitivity": 0.7367213114754099,
+      "std_sensitivity": 0.3186155346789544,
+      "avg_specificity": 0.3173913043478261,
+      "std_specificity": 0.3389073959983491
+    },
+    "test_patient_average": {
+      "avg_accuracy": 58.26661964380179,
+      "std_accuracy": 1.8209907986791771,
+      "avg_auc": 0.6153932050368258,
+      "std_auc": 0.03621617983393258,
+      "avg_f1": 0.6852873711392939,
+      "std_f1": 0.05905502192017566
+    },
+    "test_recording_level": {
+      "avg_accuracy": 68.34445359904075,
+      "std_accuracy": 10.867160871665147,
+      "avg_auc": 0.604886430746,
+      "std_auc": 0.028495841430167132,
+      "avg_f1": 0.7859468921072217,
+      "std_f1": 0.09788000761562923
+    }
+  },
+  {
+    "config_id": 7,
+    "config_name": "lr0.0005_hs256-128-64_drop0.5_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.0005,
+      "hidden_sizes": [
+        256,
+        128,
+        64
+      ],
+      "dropout": 0.5,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 61.853288661611714,
+      "std_accuracy": 3.6698370266735316,
+      "avg_auc": 0.6342361606082205,
+      "std_auc": 0.051866083911926826,
+      "avg_f1": 0.6487643993238252,
+      "std_f1": 0.029309865277238698,
+      "avg_sensitivity": 0.6225136612021858,
+      "std_sensitivity": 0.06164811199899069,
+      "avg_specificity": 0.6130434782608696,
+      "std_specificity": 0.12404645754510527
+    },
+    "test_patient_average": {
+      "avg_accuracy": 62.230647152177745,
+      "std_accuracy": 4.663033277244035,
+      "avg_auc": 0.6342361606082205,
+      "std_auc": 0.051866083911926826,
+      "avg_f1": 0.6689802350301095,
+      "std_f1": 0.04999558369553575
+    },
+    "test_recording_level": {
+      "avg_accuracy": 63.471065386021756,
+      "std_accuracy": 7.3304473724422525,
+      "avg_auc": 0.6225983731179154,
+      "std_auc": 0.06880510102667488,
+      "avg_f1": 0.7405563009613649,
+      "std_f1": 0.06946120268060761
+    }
+  },
+  {
+    "config_id": 8,
+    "config_name": "lr0.0005_hs256-128-64_drop0.7_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.0005,
+      "hidden_sizes": [
+        256,
+        128,
+        64
+      ],
+      "dropout": 0.7,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 57.698818550520194,
+      "std_accuracy": 4.921405180095151,
+      "avg_auc": 0.6290947968638632,
+      "std_auc": 0.04324173450279473,
+      "avg_f1": 0.5858303321440133,
+      "std_f1": 0.07622594003802821,
+      "avg_sensitivity": 0.5424590163934425,
+      "std_sensitivity": 0.1265326004230174,
+      "avg_specificity": 0.6217391304347826,
+      "std_specificity": 0.09078527399052654
+    },
+    "test_patient_average": {
+      "avg_accuracy": 59.20472579791924,
+      "std_accuracy": 3.071118707637222,
+      "avg_auc": 0.6290947968638632,
+      "std_auc": 0.04324173450279473,
+      "avg_f1": 0.6228213490019089,
+      "std_f1": 0.05903548633251876
+    },
+    "test_recording_level": {
+      "avg_accuracy": 59.014942164655416,
+      "std_accuracy": 3.214529905482976,
+      "avg_auc": 0.6119842192537536,
+      "std_auc": 0.034183550221597525,
+      "avg_f1": 0.7005814694016899,
+      "std_f1": 0.03430987118828571
+    }
+  },
+  {
+    "config_id": 9,
+    "config_name": "lr0.001_hs128-64-32_drop0.5_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.001,
+      "hidden_sizes": [
+        128,
+        64,
+        32
+      ],
+      "dropout": 0.5,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 58.83618409451596,
+      "std_accuracy": 2.4378083282401537,
+      "avg_auc": 0.6317771442147777,
+      "std_auc": 0.0506826538055951,
+      "avg_f1": 0.633698529331944,
+      "std_f1": 0.03552459198932743,
+      "avg_sensitivity": 0.635792349726776,
+      "std_sensitivity": 0.10090678482157904,
+      "avg_specificity": 0.5260869565217391,
+      "std_specificity": 0.14833671399332157
+    },
+    "test_patient_average": {
+      "avg_accuracy": 60.53077058719803,
+      "std_accuracy": 3.562573824164505,
+      "avg_auc": 0.6317771442147777,
+      "std_auc": 0.0506826538055951,
+      "avg_f1": 0.6693983187523123,
+      "std_f1": 0.03458422835030375
+    },
+    "test_recording_level": {
+      "avg_accuracy": 63.78000531741825,
+      "std_accuracy": 6.660538749451457,
+      "avg_auc": 0.6268448648716987,
+      "std_auc": 0.05516169029457176,
+      "avg_f1": 0.7464628690123419,
+      "std_f1": 0.06290343891290454
+    }
+  },
+  {
+    "config_id": 10,
+    "config_name": "lr0.001_hs128-64-32_drop0.7_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.001,
+      "hidden_sizes": [
+        128,
+        64,
+        32
+      ],
+      "dropout": 0.7,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 59.40398518779756,
+      "std_accuracy": 2.8423910654199664,
+      "avg_auc": 0.6253884533143264,
+      "std_auc": 0.04799108912048742,
+      "avg_f1": 0.621876385159186,
+      "std_f1": 0.03901865159847655,
+      "avg_sensitivity": 0.5956830601092895,
+      "std_sensitivity": 0.0917333847906874,
+      "avg_specificity": 0.5913043478260869,
+      "std_specificity": 0.13144536050287803
+    },
+    "test_patient_average": {
+      "avg_accuracy": 59.02309998236642,
+      "std_accuracy": 2.5457751930437724,
+      "avg_auc": 0.6253884533143264,
+      "std_auc": 0.04799108912048742,
+      "avg_f1": 0.6537857045863139,
+      "std_f1": 0.026986289363744653
+    },
+    "test_recording_level": {
+      "avg_accuracy": 63.103726991222686,
+      "std_accuracy": 5.157689680715683,
+      "avg_auc": 0.6126493210388054,
+      "std_auc": 0.05080024001359263,
+      "avg_f1": 0.741240298481614,
+      "std_f1": 0.0494512462600325
+    }
+  },
+  {
+    "config_id": 11,
+    "config_name": "lr0.001_hs256-128-64_drop0.5_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.001,
+      "hidden_sizes": [
+        256,
+        128,
+        64
+      ],
+      "dropout": 0.5,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 59.590901075648034,
+      "std_accuracy": 4.015515284294056,
+      "avg_auc": 0.6261451651223569,
+      "std_auc": 0.04550452889041473,
+      "avg_f1": 0.6420879205605784,
+      "std_f1": 0.034446643800686405,
+      "avg_sensitivity": 0.6390710382513662,
+      "std_sensitivity": 0.04477240963291503,
+      "avg_specificity": 0.5391304347826086,
+      "std_specificity": 0.07454968782383586
+    },
+    "test_patient_average": {
+      "avg_accuracy": 60.90812907776406,
+      "std_accuracy": 5.013031350335869,
+      "avg_auc": 0.6261451651223569,
+      "std_auc": 0.04550452889041473,
+      "avg_f1": 0.6617320410169968,
+      "std_f1": 0.04524831775328812
+    },
+    "test_recording_level": {
+      "avg_accuracy": 64.39773203649331,
+      "std_accuracy": 7.231842314695531,
+      "avg_auc": 0.6228217629912902,
+      "std_auc": 0.051901652668565314,
+      "avg_f1": 0.7489410110048169,
+      "std_f1": 0.0667970226107098
+    }
+  },
+  {
+    "config_id": 12,
+    "config_name": "lr0.001_hs256-128-64_drop0.7_bs64",
+    "hyperparameters": {
+      "learning_rate": 0.001,
+      "hidden_sizes": [
+        256,
+        128,
+        64
+      ],
+      "dropout": 0.7,
+      "batch_size": 64
+    },
+    "test_patient_majority": {
+      "avg_accuracy": 60.33856462704989,
+      "std_accuracy": 3.108347529246432,
+      "avg_auc": 0.625905203136137,
+      "std_auc": 0.05455072804412663,
+      "avg_f1": 0.654985830111501,
+      "std_f1": 0.02621701908469108,
+      "avg_sensitivity": 0.6724590163934427,
+      "std_sensitivity": 0.12359508191768512,
+      "avg_specificity": 0.5130434782608695,
+      "std_specificity": 0.22067091374694817
+    },
+    "test_patient_average": {
+      "avg_accuracy": 60.33856462704989,
+      "std_accuracy": 2.99162618162113,
+      "avg_auc": 0.625905203136137,
+      "std_auc": 0.05455072804412663,
+      "avg_f1": 0.6763899117421723,
+      "std_f1": 0.03272568882705998
+    },
+    "test_recording_level": {
+      "avg_accuracy": 64.52572875088418,
+      "std_accuracy": 7.2053951298526,
+      "avg_auc": 0.6197155297434989,
+      "std_auc": 0.055769361710210956,
+      "avg_f1": 0.752875462450089,
+      "std_f1": 0.06801804668940499
+    }
+  }
+]
