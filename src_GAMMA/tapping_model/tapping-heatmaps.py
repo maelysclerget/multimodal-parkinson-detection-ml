@@ -43,13 +43,21 @@ def process_tapping_file(json_file_path):
     return df
 
 
-def get_global_dt_limits(data_dir):
+def get_global_dt_limits(data_dir, valid_healthcodes):
     """Calculate global dt limits using percentiles to ignore outliers."""
     json_files = list(data_dir.rglob("*tapping_results_json_TappingSamples.json"))
     all_dts = []
     
     for json_file in json_files:
         try:
+            # ADDED: Filter by paired healthcodes
+            filename = json_file.stem
+            parts = filename.split('_')
+            health_code = parts[0] if len(parts) > 0 else "unknown"
+            
+            if health_code not in valid_healthcodes:
+                continue
+            
             df = process_tapping_file(json_file)
             if df is not None and len(df) > 0:
                 all_dts.extend(df['dt'].values)
@@ -110,15 +118,17 @@ def main():
     paired_df = pd.read_csv(paired_file)
     valid_healthcodes = set(paired_df["healthCode"].unique())
     print(f"Found {len(valid_healthcodes)} valid healthCodes")
+    
     # Remove all previous heatmaps
     if output_base_dir.exists():
         import shutil
         shutil.rmtree(output_base_dir)
         output_base_dir.mkdir(exist_ok=True, parents=True)
 
+    
     # Calculate global dt limits
     print("Calculating global dt limits...")
-    vmin, vmax = get_global_dt_limits(data_dir)
+    vmin, vmax = get_global_dt_limits(data_dir, valid_healthcodes)
 
     # Find all JSON tapping files
     json_files = list(data_dir.rglob("*tapping_results_json_TappingSamples.json"))
@@ -127,14 +137,16 @@ def main():
     # Group by patient (healthCode)
     patients = defaultdict(list)
     for json_file in json_files:
-        filename = json_file.stem # remove .json suffix
+        filename = json_file.stem
         parts = filename.split('_')
         if len(parts) >= 2:
             health_code = parts[0]
+            
+            if health_code not in valid_healthcodes:
+                continue
+            
             patients[health_code].append(json_file)
-
-    print(f"Found {len(patients)} unique patients")
-
+    
     total_saved = 0
     total_errors = 0
 

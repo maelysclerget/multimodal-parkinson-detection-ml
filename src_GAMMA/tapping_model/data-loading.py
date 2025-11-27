@@ -1,10 +1,12 @@
-#%%
 import json
 import numpy as np
 from pathlib import Path
 import pandas as pd
 from collections import defaultdict
-from sympy import re
+
+paired_hc_df = pd.read_csv('/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/data/data_paired/csv/paired_healthcode.csv')
+paired_healthcodes = set(paired_hc_df["healthCode"].unique())
+print(f"Paired healthcodes to extract: {len(paired_healthcodes)}")
 
 #%%
 # ===== Tapping Features Extraction =====
@@ -43,19 +45,13 @@ def extract_statistical_features(json_file_path):
     xs, ys = [], []
     
     for entry in data:
-        
-        #Timestamp
         timestamps.append(float(entry["TapTimeStamp"]))
-        
-        #Button
-        button = entry.get("TappedButtonId", "unknown") #if key does not exist, returns unknown 
+        button = entry.get("TappedButtonId", "unknown")
         buttons.append(button)
 
-        #Coordinates
         coord_str = entry.get("TapCoordinate", None)
         if coord_str:
             try:
-                # Remove { } and split by comma
                 x_str, y_str = coord_str.strip("{} ").split(",")
                 xs.append(float(x_str))
                 ys.append(float(y_str))
@@ -66,7 +62,7 @@ def extract_statistical_features(json_file_path):
             xs.append(np.nan)
             ys.append(np.nan)
     
-    if len(timestamps) < 2: #if less than 2 taps, exit function
+    if len(timestamps) < 2:
         return None
     
     timestamps = np.array(timestamps)
@@ -76,7 +72,7 @@ def extract_statistical_features(json_file_path):
     mean_dt = np.mean(dt)
     std_dt = np.std(dt)
     
-    left_count = sum(1 for b in buttons if "left" in str(b).lower()) # checks if "left" is in the button string
+    left_count = sum(1 for b in buttons if "left" in str(b).lower())
     right_count = sum(1 for b in buttons if "right" in str(b).lower())
     lr_ratio = left_count / right_count if right_count > 0 else 0
     missed_taps = len(buttons) - left_count - right_count
@@ -84,7 +80,6 @@ def extract_statistical_features(json_file_path):
     mean_y = np.nanmean(ys)
     std_x = np.nanstd(xs)
     std_y = np.nanstd(ys)
-
 
     features = {
         'mean_dt': mean_dt,
@@ -108,27 +103,21 @@ data_dir = Path('/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_
 json_files = list(data_dir.rglob("*tapping_results_json_TappingSamples.json"))
 print(f"Found {len(json_files)} tapping JSON files")
 
-# Group by patient (healthCode)
-patients = defaultdict(list) #defaultdict creates a dictionary that automatically creates a default value (here, an empty list) for new keys. For eg if patient A doesn't exist
-for json_file in json_files:
-    filename = json_file.stem
-    parts = filename.split('_')
-    if len(parts) > 0:
-        health_code = parts[0]
-        patients[health_code].append(json_file)
-
 sequences_data = []
 features_data = []
 
 for json_file in json_files:
     try:
+        filename = json_file.stem
+        parts = filename.split('_')
+        health_code = parts[0] if len(parts) > 0 else "unknown"
+        
+        if health_code not in paired_healthcodes:
+            continue
+        
         # ---- Event sequences ----
         events = extract_event_sequences(json_file)
-        if events is not None:  # be explicit
-            filename = json_file.stem
-            parts = filename.split('_')
-            health_code = parts[0] if len(parts) > 0 else "unknown"
-            
+        if events is not None:
             for dt, button in events:
                 sequences_data.append({
                     'healthCode': health_code,
@@ -139,9 +128,6 @@ for json_file in json_files:
         # ---- Statistical features ----
         stats = extract_statistical_features(json_file)
         if stats is not None:
-            filename = json_file.stem
-            parts = filename.split('_')
-            health_code = parts[0] if len(parts) > 0 else "unknown"
             stats['healthCode'] = health_code
             features_data.append(stats)
 
@@ -157,6 +143,5 @@ if sequences_data:
 
 if features_data:
     feat_df = pd.DataFrame(features_data)
-    print(feat_df.columns)
-    feat_df.to_csv('src_GAMMA/data/tapping_statistical_features.csv', index=False)
     print(f"✓ Statistical features saved: {len(feat_df)} rows")
+    feat_df.to_csv('src_GAMMA/data/tapping_statistical_features.csv', index=False)

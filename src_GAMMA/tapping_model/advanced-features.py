@@ -4,6 +4,11 @@ from pathlib import Path
 import json
 from scipy import stats
 
+
+paired_hc_df = pd.read_csv('/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/data/data_paired/csv/paired_healthcode.csv')
+paired_healthcodes = set(paired_hc_df["healthCode"].unique())
+print(f"Paired healthcodes to extract: {len(paired_healthcodes)}")
+
 # ===== Advanced Feature Extraction =====
 
 def extract_advanced_features(json_file_path):
@@ -90,6 +95,10 @@ def extract_all_advanced_features(data_dir):
             parts = filename.split('_')
             health_code = parts[0] if len(parts) > 0 else "unknown"
             
+            # ADDED: Filter by paired healthcodes
+            if health_code not in paired_healthcodes:
+                continue
+            
             features = extract_advanced_features(json_file)
             if features:
                 features['healthCode'] = health_code
@@ -98,7 +107,6 @@ def extract_all_advanced_features(data_dir):
             continue
     
     return pd.DataFrame(all_features)
-
 
 # ===== Patient-Level Aggregation =====
 
@@ -127,9 +135,6 @@ if __name__ == "__main__":
     print("Extracting advanced features...")
     adv_features_df = extract_all_advanced_features(data_dir)
     
-    print(f"\nSession-level features shape: {adv_features_df.shape}")
-    print(adv_features_df.head())
-    
     # Save session-level features
     adv_features_df.to_csv('src_GAMMA/data/tapping_advanced_features_session.csv', index=False)
     print("✓ Session-level features saved")
@@ -137,9 +142,7 @@ if __name__ == "__main__":
     # Aggregate to patient level
     print("\nAggregating to patient level...")
     patient_features = aggregate_to_patient_level(adv_features_df)
-    
-    print(f"Patient-level features shape: {patient_features.shape}")
-    print(patient_features.head())
+
     
     # Save patient-level features
     patient_features.to_csv('src_GAMMA/data/tapping_advanced_features_patient.csv', index=False)
