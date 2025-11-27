@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
 
 
-class EarlyFusionMLP(nn.Module):
+class IntermediateFusionMLP(nn.Module):
     def __init__(self, 
                  image_embed_dim: int = 512,
                  audio_embed_dim: int = 768,
@@ -192,7 +192,7 @@ class EarlyFusionMLP(nn.Module):
 
 if __name__ == "__main__":
     # Initialize model
-    model = EarlyFusionMLP(
+    model = IntermediateFusionMLP(
         image_embed_dim=512,
         audio_embed_dim=768,
         hidden_dims=[512, 256],
