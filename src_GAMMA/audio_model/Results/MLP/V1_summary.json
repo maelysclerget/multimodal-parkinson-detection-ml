@@ -1,0 +1,496 @@
+{
+  "test_patient_majority": {
+    "avg_accuracy": 60.338564627049905,
+    "std_accuracy": 3.421270616723679,
+    "avg_auc": 0.6110382513661202,
+    "std_auc": 0.057492821972591666,
+    "avg_f1": 0.6763673471809559,
+    "std_f1": 0.03847040690473518,
+    "avg_sensitivity": 0.7350819672131148,
+    "std_sensitivity": 0.07336960493287535,
+    "avg_specificity": 0.4304347826086956,
+    "std_specificity": 0.05897678246195887
+  },
+  "test_patient_average": {
+    "avg_accuracy": 60.71944983248104,
+    "std_accuracy": 3.0358614207087613,
+    "avg_auc": 0.6110382513661202,
+    "std_auc": 0.057492821972591666,
+    "avg_f1": 0.6844192282982171,
+    "std_f1": 0.0349872493910306
+  },
+  "test_recording_level": {
+    "avg_accuracy": 66.57224996210104,
+    "std_accuracy": 6.698986005682724,
+    "avg_auc": 0.6090843311678336,
+    "std_auc": 0.06847314606340682,
+    "avg_f1": 0.7748677533934731,
+    "std_f1": 0.05757350004717355
+  },
+  "validation_results": [
+    {
+      "fold": 1,
+      "recording_level": {
+        "accuracy": 66.38631090487239,
+        "auc": 0.6611321458725493,
+        "f1_score": 0.7639991855019345
+      },
+      "patient_level_majority": {
+        "accuracy": 63.55140186915887,
+        "f1_score": 0.6976744186046512,
+        "sensitivity": 0.7377049180327869,
+        "specificity": 0.5,
+        "confusion_matrix": [
+          [
+            23,
+            23
+          ],
+          [
+            16,
+            45
+          ]
+        ]
+      },
+      "patient_level_average": {
+        "accuracy": 65.42056074766354,
+        "f1_score": 0.7218045112781954,
+        "confusion_matrix": [
+          [
+            22,
+            24
+          ],
+          [
+            13,
+            48
+          ]
+        ]
+      }
+    },
+    {
+      "fold": 2,
+      "recording_level": {
+        "accuracy": 73.60172095881991,
+        "auc": 0.6098640484329949,
+        "f1_score": 0.8409553786335864
+      },
+      "patient_level_majority": {
+        "accuracy": 59.43396226415094,
+        "f1_score": 0.6717557251908397,
+        "sensitivity": 0.7333333333333333,
+        "specificity": 0.41304347826086957,
+        "confusion_matrix": [
+          [
+            19,
+            27
+          ],
+          [
+            16,
+            44
+          ]
+        ]
+      },
+      "patient_level_average": {
+        "accuracy": 61.32075471698113,
+        "f1_score": 0.6962962962962963,
+        "confusion_matrix": [
+          [
+            18,
+            28
+          ],
+          [
+            13,
+            47
+          ]
+        ]
+      }
+    },
+    {
+      "fold": 3,
+      "recording_level": {
+        "accuracy": 68.1145584725537,
+        "auc": 0.6609648373636563,
+        "f1_score": 0.7864450127877238
+      },
+      "patient_level_majority": {
+        "accuracy": 65.09433962264151,
+        "f1_score": 0.704,
+        "sensitivity": 0.7333333333333333,
+        "specificity": 0.5434782608695652,
+        "confusion_matrix": [
+          [
+            25,
+            21
+          ],
+          [
+            16,
+            44
+          ]
+        ]
+      },
+      "patient_level_average": {
+        "accuracy": 64.15094339622641,
+        "f1_score": 0.703125,
+        "confusion_matrix": [
+          [
+            23,
+            23
+          ],
+          [
+            15,
+            45
+          ]
+        ]
+      }
+    },
+    {
+      "fold": 4,
+      "recording_level": {
+        "accuracy": 74.52756924669946,
+        "auc": 0.7129574866534365,
+        "f1_score": 0.8412903225806452
+      },
+      "patient_level_majority": {
+        "accuracy": 67.9245283018868,
+        "f1_score": 0.734375,
+        "sensitivity": 0.7833333333333333,
+        "specificity": 0.5434782608695652,
+        "confusion_matrix": [
+          [
+            25,
+            21
+          ],
+          [
+            13,
+            47
+          ]
+        ]
+      },
+      "patient_level_average": {
+        "accuracy": 66.0377358490566,
+        "f1_score": 0.7352941176470589,
+        "confusion_matrix": [
+          [
+            20,
+            26
+          ],
+          [
+            10,
+            50
+          ]
+        ]
+      }
+    },
+    {
+      "fold": 5,
+      "recording_level": {
+        "accuracy": 66.9877408056042,
+        "auc": 0.6906481034115111,
+        "f1_score": 0.7569310122501612
+      },
+      "patient_level_majority": {
+        "accuracy": 57.009345794392516,
+        "f1_score": 0.5892857142857143,
+        "sensitivity": 0.5409836065573771,
+        "specificity": 0.6086956521739131,
+        "confusion_matrix": [
+          [
+            28,
+            18
+          ],
+          [
+            28,
+            33
+          ]
+        ]
+      },
+      "patient_level_average": {
+        "accuracy": 60.747663551401864,
+        "f1_score": 0.65,
+        "confusion_matrix": [
+          [
+            26,
+            20
+          ],
+          [
+            22,
+            39
+          ]
+        ]
+      }
+    }
+  ],
+  "test_fold_results": [
+    {
+      "fold": 1,
+      "num_patients": 107,
+      "num_recordings": 2284,
+      "recording_level": {
+        "accuracy": 59.0630472854641,
+        "auc": 0.5693769271118716,
+        "f1_score": 0.7000320821302535,
+        "confusion_matrix": [
+          [
+            258,
+            445
+          ],
+          [
+            490,
+            1091
+          ]
+        ]
+      },
+      "patient_level_majority": {
+        "accuracy": 56.074766355140184,
+        "auc": 0.5384889522451889,
+        "f1_score": 0.6178861788617886,
+        "sensitivity": 0.6229508196721312,
+        "specificity": 0.4782608695652174,
+        "confusion_matrix": [
+          [
+            22,
+            24
+          ],
+          [
+            23,
+            38
+          ]
+        ]
+      },
+      "patient_level_average": {
+        "accuracy": 56.074766355140184,
+        "auc": 0.5384889522451889,
+        "f1_score": 0.6299212598425197,
+        "confusion_matrix": [
+          [
+            20,
+            26
+          ],
+          [
+            21,
+            40
+          ]
+        ]
+      }
+    },
+    {
+      "fold": 2,
+      "num_patients": 107,
+      "num_recordings": 3448,
+      "recording_level": {
+        "accuracy": 62.267981438515086,
+        "auc": 0.5581296894695174,
+        "f1_score": 0.7458487985934753,
+        "confusion_matrix": [
+          [
+            238,
+            547
+          ],
+          [
+            754,
+            1909
+          ]
+        ]
+      },
+      "patient_level_majority": {
+        "accuracy": 64.48598130841121,
+        "auc": 0.5848182466143977,
+        "f1_score": 0.7323943661971831,
+        "sensitivity": 0.8524590163934426,
+        "specificity": 0.3695652173913043,
+        "confusion_matrix": [
+          [
+            17,
+            29
+          ],
+          [
+            9,
+            52
+          ]
+        ]
+      },
+      "patient_level_average": {
+        "accuracy": 62.616822429906534,
+        "auc": 0.5848182466143977,
+        "f1_score": 0.7222222222222222,
+        "confusion_matrix": [
+          [
+            15,
+            31
+          ],
+          [
+            9,
+            52
+          ]
+        ]
+      }
+    },
+    {
+      "fold": 3,
+      "num_patients": 106,
+      "num_recordings": 3254,
+      "recording_level": {
+        "accuracy": 71.45052243392747,
+        "auc": 0.5682058527568162,
+        "f1_score": 0.8204136864488691,
+        "confusion_matrix": [
+          [
+            203,
+            480
+          ],
+          [
+            449,
+            2122
+          ]
+        ]
+      },
+      "patient_level_majority": {
+        "accuracy": 56.60377358490566,
+        "auc": 0.5949275362318841,
+        "f1_score": 0.6567164179104478,
+        "sensitivity": 0.7333333333333333,
+        "specificity": 0.34782608695652173,
+        "confusion_matrix": [
+          [
+            16,
+            30
+          ],
+          [
+            16,
+            44
+          ]
+        ]
+      },
+      "patient_level_average": {
+        "accuracy": 59.43396226415094,
+        "auc": 0.5949275362318841,
+        "f1_score": 0.6814814814814815,
+        "confusion_matrix": [
+          [
+            17,
+            29
+          ],
+          [
+            14,
+            46
+          ]
+        ]
+      }
+    },
+    {
+      "fold": 4,
+      "num_patients": 106,
+      "num_recordings": 2095,
+      "recording_level": {
+        "accuracy": 62.911694510739856,
+        "auc": 0.6079692418437813,
+        "f1_score": 0.7476453393959077,
+        "confusion_matrix": [
+          [
+            167,
+            216
+          ],
+          [
+            561,
+            1151
+          ]
+        ]
+      },
+      "patient_level_majority": {
+        "accuracy": 63.20754716981132,
+        "auc": 0.7115942028985507,
+        "f1_score": 0.6976744186046512,
+        "sensitivity": 0.75,
+        "specificity": 0.4782608695652174,
+        "confusion_matrix": [
+          [
+            22,
+            24
+          ],
+          [
+            15,
+            45
+          ]
+        ]
+      },
+      "patient_level_average": {
+        "accuracy": 60.37735849056604,
+        "auc": 0.7115942028985507,
+        "f1_score": 0.6666666666666666,
+        "confusion_matrix": [
+          [
+            22,
+            24
+          ],
+          [
+            18,
+            42
+          ]
+        ]
+      }
+    },
+    {
+      "fold": 5,
+      "num_patients": 106,
+      "num_recordings": 3863,
+      "recording_level": {
+        "accuracy": 77.16800414185866,
+        "auc": 0.741739944657182,
+        "f1_score": 0.8603988603988604,
+        "confusion_matrix": [
+          [
+            263,
+            275
+          ],
+          [
+            607,
+            2718
+          ]
+        ]
+      },
+      "patient_level_majority": {
+        "accuracy": 61.32075471698113,
+        "auc": 0.6253623188405797,
+        "f1_score": 0.6771653543307087,
+        "sensitivity": 0.7166666666666667,
+        "specificity": 0.4782608695652174,
+        "confusion_matrix": [
+          [
+            22,
+            24
+          ],
+          [
+            17,
+            43
+          ]
+        ]
+      },
+      "patient_level_average": {
+        "accuracy": 65.09433962264151,
+        "auc": 0.6253623188405797,
+        "f1_score": 0.7218045112781954,
+        "confusion_matrix": [
+          [
+            21,
+            25
+          ],
+          [
+            12,
+            48
+          ]
+        ]
+      }
+    }
+  ],
+  "config": {
+    "batch_size": 64,
+    "num_epochs": 100,
+    "learning_rate": 0.001,
+    "hidden_sizes": [
+      256,
+      128,
+      64
+    ],
+    "dropout": 0.5,
+    "num_features": 57
+  }
+}
