@@ -110,21 +110,19 @@ def process_single_wav_example(wav_path, output_dir):
     return waveform, sample_rate
 
 
-def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=20, seed=42):
+def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=None, seed=42):
     """
-    Process all WAV files with limit on recordings per healthCode
+    Process all WAV files (no limit on recordings per healthCode)
     
     Args:
         input_dir: Directory containing WAV files
         output_dir: Directory to save normalized waveforms (.npy)
-        max_records_per_patient: Maximum number of records per healthCode (default: 20)
-        seed: Random seed for reproducible sampling
+        max_records_per_patient: Not used (kept for compatibility)
+        seed: Random seed (not used when no sampling)
     """
     print(f"\n{'='*80}")
-    print("Processing all WAV files with patient limits")
+    print("Processing ALL WAV files (no patient limits)")
     print(f"{'='*80}\n")
-    
-    random.seed(seed)
     
     # Find all WAV files
     wav_files = glob.glob(os.path.join(input_dir, "**/*.wav"), recursive=True)
@@ -134,11 +132,11 @@ def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=2
         print("No WAV files found!")
         return
     
-    # Group files by healthCode
+    # Group files by healthCode for statistics only
     healthcode_to_files = defaultdict(list)
     files_without_healthcode = []
     
-    print("Grouping files by healthCode...")
+    print("Grouping files by healthCode (for statistics)...")
     for wav_path in tqdm(wav_files):
         filename = os.path.basename(wav_path)
         healthCode, record_id, basename = parse_filename(filename)
@@ -168,32 +166,18 @@ def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=2
         print(f"  - Median: {np.median(record_counts):.1f}")
         print(f"  - Min: {min(record_counts)}")
         print(f"  - Max: {max(record_counts)}")
-        print(f"  - HealthCodes with >{max_records_per_patient} records: {sum(1 for c in record_counts if c > max_records_per_patient)}")
     
-    # Sample files if needed
+    # Process ALL files (no sampling)
     files_to_process = []
-    sampled_healthcodes = 0
     
     for healthCode, file_list in healthcode_to_files.items():
-        if len(file_list) > max_records_per_patient:
-            # Randomly sample max_records_per_patient records
-            sampled = random.sample(file_list, max_records_per_patient)
-            files_to_process.extend(sampled)
-            sampled_healthcodes += 1
-            if sampled_healthcodes <= 5:  # Show first 5 examples
-                print(f"  HealthCode {healthCode[:8]}... has {len(file_list)} records → sampling {max_records_per_patient}")
-        else:
-            # Use all records
-            files_to_process.extend(file_list)
-    
-    if sampled_healthcodes > 5:
-        print(f"  ... and {sampled_healthcodes - 5} more healthCodes were sampled")
+        # Use all records for every patient
+        files_to_process.extend(file_list)
     
     # Add files without healthCode (process all of them)
     files_to_process.extend(files_without_healthcode)
     
-    print(f"\nFiles to process after sampling: {len(files_to_process)}")
-    print(f"Files excluded due to sampling: {len(wav_files) - len(files_to_process)}\n")
+    print(f"\nProcessing all {len(files_to_process)} files (no sampling)\n")
     
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
@@ -237,7 +221,6 @@ if __name__ == "__main__":
     # Configuration
     INPUT_DIR = "/mloscratch/users/gnahas/data/wav"
     OUTPUT_DIR = "/mloscratch/users/gnahas/data/waveform_norm"
-    MAX_RECORDS_PER_PATIENT = 20
     
     print("="*80)
     print("WAV to Normalized Waveform Converter")
@@ -245,7 +228,7 @@ if __name__ == "__main__":
     print(f"\nConfiguration:")
     print(f"  - Input directory: {INPUT_DIR}")
     print(f"  - Output directory: {OUTPUT_DIR}")
-    print(f"  - Max records per patient: {MAX_RECORDS_PER_PATIENT}")
+    print(f"  - Processing: ALL files (no limit per patient)")
     print(f"\nNormalization: Waveforms normalized to [-1.0, 1.0] range")
     print(f"Output format: .npy files (NumPy arrays)")
     print()
@@ -265,5 +248,5 @@ if __name__ == "__main__":
     
     # Uncomment the line below to process all files
     # (Comment it out to only process the single example file)
-    process_all_wavs_with_limit(INPUT_DIR, OUTPUT_DIR, MAX_RECORDS_PER_PATIENT)
+    process_all_wavs_with_limit(INPUT_DIR, OUTPUT_DIR)
     
