@@ -44,7 +44,7 @@ def process_tapping_file(json_file_path):
 
 
 def get_global_dt_limits(data_dir):
-    """Calculate global min/max dt across all JSON files."""
+    """Calculate global dt limits using percentiles to ignore outliers."""
     json_files = list(data_dir.rglob("*tapping_results_json_TappingSamples.json"))
     all_dts = []
     
@@ -59,12 +59,22 @@ def get_global_dt_limits(data_dir):
     if not all_dts:
         return 0, 1  # fallback
     
-    dt_min = np.min(all_dts)
-    dt_max = np.max(all_dts)
-    print(f"Global dt range: {dt_min:.6f} to {dt_max:.6f} seconds")
+    all_dts = np.array(all_dts)
+    
+    # Use percentiles instead of min/max to ignore outliers
+    dt_min = np.percentile(all_dts, 1)    # 1st percentile (ignore bottom 1%)
+    dt_max = np.percentile(all_dts, 99)   # 99th percentile (ignore top 1%)
+    
+    # Also print statistics
+    print(f"Global dt statistics:")
+    print(f"  Min (absolute): {np.min(all_dts):.6f}")
+    print(f"  Max (absolute): {np.max(all_dts):.6f}")
+    print(f"  1st percentile: {dt_min:.6f}")
+    print(f"  99th percentile: {dt_max:.6f}")
+    print(f"  Mean: {np.mean(all_dts):.6f}")
+    print(f"  Median: {np.median(all_dts):.6f}")
     
     return dt_min, dt_max
-
 
 def plot_speed_heatmap(df, patient_id, record_id, output_path, vmin, vmax):
     """Create and save heatmap visualization with fixed color scale."""
@@ -87,11 +97,19 @@ def plot_speed_heatmap(df, patient_id, record_id, output_path, vmin, vmax):
 
 
 def main():
+    
     # Paths
-    data_dir = Path("src_GAMMA/data")
+    data_dir = Path("src_GAMMA/data/raw_tapping")
     output_base_dir = Path("src_GAMMA/tapping-heatmaps")
+    paired_file = Path("src_GAMMA/data/data_paired/csv/paired_healthcode.csv")
+    
     output_base_dir.mkdir(exist_ok=True, parents=True)
 
+    # Load paired healthcodes
+    print(f"Loading paired healthcodes from {paired_file}...")
+    paired_df = pd.read_csv(paired_file)
+    valid_healthcodes = set(paired_df["healthCode"].unique())
+    print(f"Found {len(valid_healthcodes)} valid healthCodes")
     # Remove all previous heatmaps
     if output_base_dir.exists():
         import shutil
@@ -124,7 +142,7 @@ def main():
     for patient_id, files in sorted(patients.items())[:3]:      #for all patients, replace by for patient_id, files in patients.items():
         print(f"\nProcessing patient {patient_id} ({len(files)} total trials)...")
 
-        selected_files = random.sample(files, min(20, len(files)))
+        selected_files = files  # Use all files
         print(f"  Selected {len(selected_files)} trials")
 
         #create patient folder
