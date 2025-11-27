@@ -171,7 +171,6 @@ class EarlyFusionMLP(nn.Module):
         Returns:
             Dictionary containing test metrics (loss, accuracy, F1, confusion matrix, ROC AUC, ROC curve)
         """
-
         self.eval()
         with torch.no_grad():
             output = self.forward(test_image_embeds, test_audio_embeds)
