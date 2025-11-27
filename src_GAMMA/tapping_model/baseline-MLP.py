@@ -13,7 +13,7 @@ import seaborn as sns
 
 train_split_path = "/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_train.csv"
 valtest_split_path = "/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_val_test.csv"
-labels_path = "/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/data/data_paired/csv/paired_healthcode.csv"
+labels_path = "/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
 
 # lr ratio, missed taps, right, left, mean x, mean y...
 basic_features_path = "/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/data/tapping_statistical_features.csv"
@@ -43,6 +43,40 @@ class MLP(nn.Module):
     
     def forward(self, x): #takes input tensor x and passes it through the network layers defined in __init__
         return torch.sigmoid(self.net(x))
+    
+def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='mean'):
+    """Aggregate trial-level predictions to patient-level predictions."""
+    
+    results_df = pd.DataFrame({
+        'healthCode': test_df['healthCode'].values,
+        'pred_proba': test_preds_proba,
+        'pred_binary': test_preds_binary,
+        'label': test_labels
+    })
+    
+    if aggregation_method == 'mean':
+        patient_preds = results_df.groupby('healthCode').agg({
+            'pred_proba': 'mean',
+            'label': 'first'  # Label is same for all trials of same patient
+        }).reset_index()
+        patient_preds['pred_binary'] = (patient_preds['pred_proba'] > 0.5).astype(int)
+    
+    elif aggregation_method == 'majority':
+        patient_preds = results_df.groupby('healthCode').agg({
+            'pred_binary': lambda x: 1 if (x > 0.5).sum() > len(x) / 2 else 0,
+            'pred_proba': 'mean',
+            'label': 'first'
+        }).reset_index()
+    
+    elif aggregation_method == 'max':
+        patient_preds = results_df.groupby('healthCode').agg({
+            'pred_proba': 'max',
+            'label': 'first'
+        }).reset_index()
+        patient_preds['pred_binary'] = (patient_preds['pred_proba'] > 0.5).astype(int)
+    
+    return patient_preds
+
 
 def train_and_evaluate(features_df, model_name): 
     print(f"\n Model: {model_name}")
@@ -63,7 +97,6 @@ def train_and_evaluate(features_df, model_name):
     data_df[numeric_cols] = data_df[numeric_cols].fillna(data_df[numeric_cols].mean())
     
     print(f"Total patients: {len(data_df)}")
-    print(f"Columns: {data_df.columns.tolist()}")
     
     # Load splits
     train_split = pd.read_csv(train_split_path)
@@ -83,7 +116,6 @@ def train_and_evaluate(features_df, model_name):
     
     # Extract features
     feature_cols = [c for c in data_df.columns if c not in ["healthCode", "label_PD"]]
-    print(f"Features ({len(feature_cols)}): {feature_cols}")
     
     # Scale features
     scaler = StandardScaler()
@@ -115,7 +147,6 @@ def train_and_evaluate(features_df, model_name):
     
     # Initialize model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
     
     model = MLP(len(feature_cols)).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
@@ -127,7 +158,6 @@ def train_and_evaluate(features_df, model_name):
     patience = 10
     patience_counter = 0
     
-    print("\n===== Training =====")
     for epoch in range(num_epochs):
         # Train
         model.train()
@@ -157,9 +187,6 @@ def train_and_evaluate(features_df, model_name):
         
         val_loss /= len(val_loader)
         
-        if (epoch + 1) % 10 == 0:
-            print(f"Epoch {epoch+1}/{num_epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
-        
         # Early stopping
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -167,13 +194,10 @@ def train_and_evaluate(features_df, model_name):
         else:
             patience_counter += 1
             if patience_counter >= patience:
-                print(f"\n✓ Early stopping at epoch {epoch+1}")
                 break
     
-        # Test evaluation
-    print("\n===== Test Evaluation =====")
+    # Test evaluation - Get predictions only
     model.eval()
-    
     test_preds_proba = []
     test_preds_binary = []
     test_labels = []
@@ -186,43 +210,23 @@ def train_and_evaluate(features_df, model_name):
             test_preds_binary.extend((y_pred > 0.5).cpu().numpy())
             test_labels.extend(y_batch.numpy())
     
-    accuracy = accuracy_score(test_labels, test_preds_binary)
-    f1 = f1_score(test_labels, test_preds_binary)
-    auc = roc_auc_score(test_labels, test_preds_proba)
-    cm = confusion_matrix(test_labels, test_preds_binary)
+    # Aggregate to patient-level ONLY
+    patient_preds = aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='mean')
     
-    print(f"Accuracy:  {accuracy:.4f}")
-    print(f"F1-Score:  {f1:.4f}")
-    print(f"AUC-ROC:   {auc:.4f}")
-    print(f"\nConfusion Matrix:\n{cm}")
+    patient_accuracy = accuracy_score(patient_preds['label'], patient_preds['pred_binary'])
+    patient_f1 = f1_score(patient_preds['label'], patient_preds['pred_binary'])
+    patient_auc = roc_auc_score(patient_preds['label'], patient_preds['pred_proba'])
     
+    print(f"Patient-level Accuracy: {patient_accuracy:.4f}")
+    print(f"Patient-level F1-Score: {patient_f1:.4f}")
+    print(f"Patient-level AUC-ROC:  {patient_auc:.4f}")
     
-# Plot results
-    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-    
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[0])
-    axes[0].set_title(f'Confusion Matrix - {model_name}')
-    axes[0].set_ylabel('True')
-    axes[0].set_xlabel('Predicted')
-    
-    metrics = ['Accuracy', 'F1-Score', 'AUC-ROC']
-    values = [accuracy, f1, auc]
-    axes[1].bar(metrics, values)
-    axes[1].set_ylim([0, 1])
-    axes[1].set_title(f'Test Performance - {model_name}')
-    
-    plt.tight_layout()
-
-    if "Basic" in model_name:
-        filename = "src_GAMMA/tapping_model/01_basic_features_results.png"
-    else:
-        filename = "src_GAMMA/tapping_model/02_advanced_features_results.png"
-    
-    plt.savefig(filename, dpi=100)
-    print(f"\n✓ Results saved to {filename}")
-    plt.close()
-    
-    return {'model': model_name, 'accuracy': accuracy, 'f1': f1, 'auc': auc}
+    return {
+        'model': model_name, 
+        'accuracy': patient_accuracy,
+        'f1_score': patient_f1,
+        'auc': patient_auc
+    }
 
 # ===== Main =====
 if __name__ == "__main__":
@@ -231,21 +235,25 @@ if __name__ == "__main__":
     basic_features = pd.read_csv(basic_features_path)
     advanced_features = pd.read_csv(advanced_features_path)
     
-    # Train both models
-    results = []
-    results.append(train_and_evaluate(basic_features, "Baseline MLP (Basic Features)"))
-    results.append(train_and_evaluate(advanced_features, "Advanced MLP (Advanced Features)"))
+    print("\n===== Concatenating Features =====")
+    combined_features = basic_features.merge(advanced_features, on="healthCode", how="inner")
+    print(f"Combined features shape: {combined_features.shape}\n")
     
-"""     # Compare
-    print("COMPARISON")
+    # Train all three models
+    results = []
+    results.append(train_and_evaluate(basic_features, "Basic Features"))
+    results.append(train_and_evaluate(advanced_features, "Advanced Features"))
+    results.append(train_and_evaluate(combined_features, "Combined Features"))
+    
+    # Final comparison table
+    print("\n" + "="*70)
+    print("FINAL RESULTS - PATIENT-LEVEL AGGREGATION")
+    print("="*70)
     results_df = pd.DataFrame(results)
     print(results_df.to_string(index=False))
     
-    if results[1]['auc'] > results[0]['auc']:
-        improvement = (results[1]['auc'] - results[0]['auc']) * 100
-        print(f"\n✓ Advanced features improve AUC by {improvement:.2f}%")
-    else:
-        print(f"\n✗ Basic features perform better") """
-        
+    best_idx = results_df['auc'].idxmax()
+    print(f"\n✓ Best model: {results_df.loc[best_idx, 'model']} (AUC: {results_df.loc[best_idx, 'auc']:.4f})")
+
         
     

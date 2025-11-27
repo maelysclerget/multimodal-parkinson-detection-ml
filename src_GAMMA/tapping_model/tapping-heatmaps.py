@@ -109,7 +109,7 @@ def main():
     # Paths
     data_dir = Path("src_GAMMA/data/raw_tapping")
     output_base_dir = Path("src_GAMMA/tapping-heatmaps")
-    paired_file = Path("src_GAMMA/data/data_paired/csv/paired_healthcode.csv")
+    paired_file = Path("src_GAMMA/paired_healthcode.csv")
     
     output_base_dir.mkdir(exist_ok=True, parents=True)
 

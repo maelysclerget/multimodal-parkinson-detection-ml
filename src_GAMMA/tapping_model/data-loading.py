@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 from collections import defaultdict
 
-paired_hc_df = pd.read_csv('/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/data/data_paired/csv/paired_healthcode.csv')
+paired_hc_df = pd.read_csv('/Users/maelysclerget/Desktop/CS-433/Project2/NeuroMeditron/src_GAMMA/paired_healthcode.csv')
 paired_healthcodes = set(paired_hc_df["healthCode"].unique())
 print(f"Paired healthcodes to extract: {len(paired_healthcodes)}")
 
