@@ -231,7 +231,7 @@ def train_model(
     
     # Learning rate scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='min', factor=0.5, patience=10
+        optimizer, mode='max', factor=0.5, patience=10
     )
     
     best_val_auc = 0.0
@@ -250,7 +250,7 @@ def train_model(
         val_loss, val_acc, val_auc = evaluate(model, val_loader, criterion, device)
         
         # Update learning rate
-        scheduler.step(val_loss)
+        scheduler.step(val_auc)
         
         # Print progress
         print(f"Epoch [{epoch+1}/{num_epochs}]")
