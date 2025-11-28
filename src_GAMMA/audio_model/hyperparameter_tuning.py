@@ -17,6 +17,7 @@ HYPERPARAMETER_GRID = {
     ],
     'dropout': [0.5, 0.7],  # High dropout only
     'batch_size': [64],  # Fixed batch size
+    'class_weight': [1.5, 2.5, 3.5],  # Moderate to strong (1.32 was too weak, 4.0 might be extreme)
 }
 
 # Fixed parameters
@@ -24,7 +25,7 @@ FEATURES_CSV = "/mloscratch/users/gnahas/data/features/acoustic_features.csv"
 LABELS_CSV = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
 TRAIN_FOLDS_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
 VAL_TEST_FOLDS_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
-BASE_OUTPUT_DIR = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/MLP_Tuning/V2"
+BASE_OUTPUT_DIR = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/MLP_Tuning/V3"
 NUM_EPOCHS = 100
 
 
@@ -63,7 +64,7 @@ def run_hyperparameter_search():
         print("="*80 + "\n")
         
         # Create config name (no subfolder, just for identification)
-        config_name = f"lr{params['learning_rate']}_hs{'-'.join(map(str, params['hidden_sizes']))}_drop{params['dropout']}_bs{params['batch_size']}"
+        config_name = f"lr{params['learning_rate']}_hs{'-'.join(map(str, params['hidden_sizes']))}_drop{params['dropout']}_bs{params['batch_size']}_cw{params['class_weight']}"
         
         # Use a temporary directory that we'll delete after extracting results
         import tempfile
@@ -81,7 +82,8 @@ def run_hyperparameter_search():
                 num_epochs=NUM_EPOCHS,
                 learning_rate=params['learning_rate'],
                 hidden_sizes=params['hidden_sizes'],
-                dropout=params['dropout']
+                dropout=params['dropout'],
+                class_weight=params['class_weight']
             )
             
             # Store results with hyperparameters
@@ -96,9 +98,16 @@ def run_hyperparameter_search():
             all_results.append(result)
             
             print(f"\n✓ Configuration {idx+1} completed successfully")
-            print(f"  Test Patient (Majority) - Acc: {summary['test_patient_majority']['avg_accuracy']:.2f}%, "
+            print(f"  Patient (Majority) - Acc: {summary['test_patient_majority']['avg_accuracy']:.2f}%, "
                   f"AUC: {summary['test_patient_majority']['avg_auc']:.4f}, "
-                  f"F1: {summary['test_patient_majority']['avg_f1']:.4f}")
+                  f"Sens: {summary['test_patient_majority']['avg_sensitivity']:.3f}, "
+                  f"Spec: {summary['test_patient_majority']['avg_specificity']:.3f}")
+            print(f"  Patient (Average)  - Acc: {summary['test_patient_average']['avg_accuracy']:.2f}%, "
+                  f"AUC: {summary['test_patient_average']['avg_auc']:.4f}")
+            print(f"  Recording-level    - Acc: {summary['test_recording_level']['avg_accuracy']:.2f}%, "
+                  f"AUC: {summary['test_recording_level']['avg_auc']:.4f}, "
+                  f"Sens: {summary['test_recording_level']['avg_sensitivity']:.3f}, "
+                  f"Spec: {summary['test_recording_level']['avg_specificity']:.3f}")
             
             # Clean up temporary directory
             import shutil
@@ -176,6 +185,10 @@ def run_hyperparameter_search():
               f"± {best_maj_accuracy['test_patient_majority']['std_auc']:.4f}")
         print(f"F1: {best_maj_accuracy['test_patient_majority']['avg_f1']:.4f} "
               f"± {best_maj_accuracy['test_patient_majority']['std_f1']:.4f}")
+        print(f"Sensitivity: {best_maj_accuracy['test_patient_majority']['avg_sensitivity']:.4f} "
+              f"± {best_maj_accuracy['test_patient_majority']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_maj_accuracy['test_patient_majority']['avg_specificity']:.4f} "
+              f"± {best_maj_accuracy['test_patient_majority']['std_specificity']:.4f}")
         
         print("\n--- Best by AUC ---")
         print(f"Config: {best_maj_auc['config_name']}")
@@ -186,6 +199,10 @@ def run_hyperparameter_search():
               f"± {best_maj_auc['test_patient_majority']['std_accuracy']:.2f}%")
         print(f"F1: {best_maj_auc['test_patient_majority']['avg_f1']:.4f} "
               f"± {best_maj_auc['test_patient_majority']['std_f1']:.4f}")
+        print(f"Sensitivity: {best_maj_auc['test_patient_majority']['avg_sensitivity']:.4f} "
+              f"± {best_maj_auc['test_patient_majority']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_maj_auc['test_patient_majority']['avg_specificity']:.4f} "
+              f"± {best_maj_auc['test_patient_majority']['std_specificity']:.4f}")
         
         print("\n--- Best by F1 Score ---")
         print(f"Config: {best_maj_f1['config_name']}")
@@ -196,6 +213,10 @@ def run_hyperparameter_search():
               f"± {best_maj_f1['test_patient_majority']['std_accuracy']:.2f}%")
         print(f"AUC: {best_maj_f1['test_patient_majority']['avg_auc']:.4f} "
               f"± {best_maj_f1['test_patient_majority']['std_auc']:.4f}")
+        print(f"Sensitivity: {best_maj_f1['test_patient_majority']['avg_sensitivity']:.4f} "
+              f"± {best_maj_f1['test_patient_majority']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_maj_f1['test_patient_majority']['avg_specificity']:.4f} "
+              f"± {best_maj_f1['test_patient_majority']['std_specificity']:.4f}")
         
         print("\n" + "="*80)
         print("BEST CONFIGURATIONS - PATIENT-LEVEL (AVERAGE PROBABILITY)")
@@ -210,6 +231,10 @@ def run_hyperparameter_search():
               f"± {best_avg_accuracy['test_patient_average']['std_auc']:.4f}")
         print(f"F1: {best_avg_accuracy['test_patient_average']['avg_f1']:.4f} "
               f"± {best_avg_accuracy['test_patient_average']['std_f1']:.4f}")
+        print(f"Sensitivity: {best_avg_accuracy['test_patient_average']['avg_sensitivity']:.4f} "
+              f"± {best_avg_accuracy['test_patient_average']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_avg_accuracy['test_patient_average']['avg_specificity']:.4f} "
+              f"± {best_avg_accuracy['test_patient_average']['std_specificity']:.4f}")
         
         print("\n--- Best by AUC ---")
         print(f"Config: {best_avg_auc['config_name']}")
@@ -220,6 +245,10 @@ def run_hyperparameter_search():
               f"± {best_avg_auc['test_patient_average']['std_accuracy']:.2f}%")
         print(f"F1: {best_avg_auc['test_patient_average']['avg_f1']:.4f} "
               f"± {best_avg_auc['test_patient_average']['std_f1']:.4f}")
+        print(f"Sensitivity: {best_avg_auc['test_patient_average']['avg_sensitivity']:.4f} "
+              f"± {best_avg_auc['test_patient_average']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_avg_auc['test_patient_average']['avg_specificity']:.4f} "
+              f"± {best_avg_auc['test_patient_average']['std_specificity']:.4f}")
         
         print("\n--- Best by F1 Score ---")
         print(f"Config: {best_avg_f1['config_name']}")
@@ -230,6 +259,10 @@ def run_hyperparameter_search():
               f"± {best_avg_f1['test_patient_average']['std_accuracy']:.2f}%")
         print(f"AUC: {best_avg_f1['test_patient_average']['avg_auc']:.4f} "
               f"± {best_avg_f1['test_patient_average']['std_auc']:.4f}")
+        print(f"Sensitivity: {best_avg_f1['test_patient_average']['avg_sensitivity']:.4f} "
+              f"± {best_avg_f1['test_patient_average']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_avg_f1['test_patient_average']['avg_specificity']:.4f} "
+              f"± {best_avg_f1['test_patient_average']['std_specificity']:.4f}")
         
         print("\n" + "="*80)
         print("BEST CONFIGURATIONS - RECORDING-LEVEL")
@@ -244,6 +277,10 @@ def run_hyperparameter_search():
               f"± {best_rec_accuracy['test_recording_level']['std_auc']:.4f}")
         print(f"F1: {best_rec_accuracy['test_recording_level']['avg_f1']:.4f} "
               f"± {best_rec_accuracy['test_recording_level']['std_f1']:.4f}")
+        print(f"Sensitivity: {best_rec_accuracy['test_recording_level']['avg_sensitivity']:.4f} "
+              f"± {best_rec_accuracy['test_recording_level']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_rec_accuracy['test_recording_level']['avg_specificity']:.4f} "
+              f"± {best_rec_accuracy['test_recording_level']['std_specificity']:.4f}")
         
         print("\n--- Best by AUC ---")
         print(f"Config: {best_rec_auc['config_name']}")
@@ -254,6 +291,10 @@ def run_hyperparameter_search():
               f"± {best_rec_auc['test_recording_level']['std_accuracy']:.2f}%")
         print(f"F1: {best_rec_auc['test_recording_level']['avg_f1']:.4f} "
               f"± {best_rec_auc['test_recording_level']['std_f1']:.4f}")
+        print(f"Sensitivity: {best_rec_auc['test_recording_level']['avg_sensitivity']:.4f} "
+              f"± {best_rec_auc['test_recording_level']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_rec_auc['test_recording_level']['avg_specificity']:.4f} "
+              f"± {best_rec_auc['test_recording_level']['std_specificity']:.4f}")
         
         print("\n--- Best by F1 Score ---")
         print(f"Config: {best_rec_f1['config_name']}")
@@ -264,6 +305,10 @@ def run_hyperparameter_search():
               f"± {best_rec_f1['test_recording_level']['std_accuracy']:.2f}%")
         print(f"AUC: {best_rec_f1['test_recording_level']['avg_auc']:.4f} "
               f"± {best_rec_f1['test_recording_level']['std_auc']:.4f}")
+        print(f"Sensitivity: {best_rec_f1['test_recording_level']['avg_sensitivity']:.4f} "
+              f"± {best_rec_f1['test_recording_level']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_rec_f1['test_recording_level']['avg_specificity']:.4f} "
+              f"± {best_rec_f1['test_recording_level']['std_specificity']:.4f}")
         
         print(f"\nResults saved to: {final_path}")
         print("="*80)
@@ -289,6 +334,34 @@ def run_hyperparameter_search():
         best_path = os.path.join(BASE_OUTPUT_DIR, 'best_configurations.json')
         with open(best_path, 'w') as f:
             json.dump(best_configs, f, indent=2)
+        
+        # Quick diagnostic summary
+        print("\n" + "="*80)
+        print("QUICK DIAGNOSTIC SUMMARY - AVERAGE METRICS ACROSS ALL CONFIGURATIONS")
+        print("="*80)
+        
+        avg_sensitivity = sum(r['test_patient_majority']['avg_sensitivity'] for r in successful_results) / len(successful_results)
+        avg_specificity = sum(r['test_patient_majority']['avg_specificity'] for r in successful_results) / len(successful_results)
+        avg_auc = sum(r['test_patient_majority']['avg_auc'] for r in successful_results) / len(successful_results)
+        avg_accuracy = sum(r['test_patient_majority']['avg_accuracy'] for r in successful_results) / len(successful_results)
+        
+        print(f"\nPatient-Level (Majority Voting) - Averaged across {len(successful_results)} configs:")
+        print(f"  Average Sensitivity: {avg_sensitivity:.3f} ({avg_sensitivity*100:.1f}%)")
+        print(f"  Average Specificity: {avg_specificity:.3f} ({avg_specificity*100:.1f}%)")
+        print(f"  Average AUC:         {avg_auc:.4f}")
+        print(f"  Average Accuracy:    {avg_accuracy:.2f}%")
+        
+        # Breakdown by class weight
+        print(f"\nBreakdown by Class Weight:")
+        class_weights = sorted(set(r['hyperparameters']['class_weight'] for r in successful_results))
+        for cw in class_weights:
+            cw_results = [r for r in successful_results if r['hyperparameters']['class_weight'] == cw]
+            cw_sens = sum(r['test_patient_majority']['avg_sensitivity'] for r in cw_results) / len(cw_results)
+            cw_spec = sum(r['test_patient_majority']['avg_specificity'] for r in cw_results) / len(cw_results)
+            cw_auc = sum(r['test_patient_majority']['avg_auc'] for r in cw_results) / len(cw_results)
+            print(f"  Class Weight {cw}: Sens={cw_sens:.3f}, Spec={cw_spec:.3f}, AUC={cw_auc:.4f}")
+        
+        print("="*80)
         
     return all_results
 

@@ -203,6 +203,7 @@ def train_model(
     val_loader,
     num_epochs=100,
     learning_rate=0.001,
+    class_weight=3.0,
     device='cuda'
 ):
     """
@@ -214,6 +215,7 @@ def train_model(
         val_loader: Validation data loader
         num_epochs: Number of training epochs
         learning_rate: Learning rate
+        class_weight: Weight for class 0 (controls) to handle imbalance
         device: Device to train on ('cuda' or 'cpu')
     
     Returns:
@@ -222,9 +224,9 @@ def train_model(
     model = model.to(device)
     
     # Loss and optimizer with class weights to handle imbalance
-    # Weight ratio based on original class distribution (230 controls : 302 PD = 1.32:1)
-    class_weights = torch.FloatTensor([1.32, 1.0]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    # Label smoothing (0.1) prevents overconfident predictions and improves calibration
+    class_weights = torch.FloatTensor([class_weight, 1.0]).to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-3)  # Increased regularization
     
     # Learning rate scheduler
@@ -373,7 +375,8 @@ def train_5fold_cv(
     num_epochs=100,
     learning_rate=0.001,
     hidden_sizes=[256, 128, 64],
-    dropout=0.5
+    dropout=0.5,
+    class_weight=3.0
 ):
     """
     Train MLP with 5-fold cross-validation
@@ -389,6 +392,7 @@ def train_5fold_cv(
         learning_rate: Learning rate
         hidden_sizes: List of hidden layer sizes
         dropout: Dropout probability
+        class_weight: Weight for class 0 (controls) to handle imbalance
     """
     import os
     import json
@@ -524,6 +528,7 @@ def train_5fold_cv(
             val_loader,
             num_epochs=num_epochs,
             learning_rate=learning_rate,
+            class_weight=class_weight,
             device=device
         )
         
@@ -558,6 +563,12 @@ def train_5fold_cv(
         val_rec_accuracy = 100 * np.mean(np.array(val_preds) == np.array(val_labels))
         val_rec_auc = roc_auc_score(val_labels, val_probs)
         val_rec_f1 = f1_score(val_labels, val_preds)
+        val_rec_cm = confusion_matrix(val_labels, val_preds)
+        
+        # Calculate recording-level sensitivity/specificity
+        tn_rec, fp_rec, fn_rec, tp_rec = val_rec_cm.ravel()
+        val_rec_sensitivity = tp_rec / (tp_rec + fn_rec) if (tp_rec + fn_rec) > 0 else 0
+        val_rec_specificity = tn_rec / (tn_rec + fp_rec) if (tn_rec + fp_rec) > 0 else 0
         
         # === Patient-level metrics (majority voting) ===
         val_pat_preds_maj, val_pat_labels_maj, _ = aggregate_predictions_by_patient(
@@ -580,6 +591,11 @@ def train_5fold_cv(
         val_sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
         val_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
         
+        # Calculate sensitivity/specificity for average probability
+        tn_avg, fp_avg, fn_avg, tp_avg = val_avg_cm.ravel()
+        val_avg_sensitivity = tp_avg / (tp_avg + fn_avg) if (tp_avg + fn_avg) > 0 else 0
+        val_avg_specificity = tn_avg / (tn_avg + fp_avg) if (tn_avg + fp_avg) > 0 else 0
+        
         # Store validation results
         val_fold_results = {
             'fold': fold + 1,
@@ -587,6 +603,9 @@ def train_5fold_cv(
                 'accuracy': val_rec_accuracy,
                 'auc': val_rec_auc,
                 'f1_score': val_rec_f1,
+                'sensitivity': val_rec_sensitivity,
+                'specificity': val_rec_specificity,
+                'confusion_matrix': val_rec_cm.tolist()
             },
             'patient_level_majority': {
                 'accuracy': val_maj_accuracy,
@@ -598,6 +617,8 @@ def train_5fold_cv(
             'patient_level_average': {
                 'accuracy': val_avg_accuracy,
                 'f1_score': val_avg_f1,
+                'sensitivity': val_avg_sensitivity,
+                'specificity': val_avg_specificity,
                 'confusion_matrix': val_avg_cm.tolist()
             }
         }
@@ -606,6 +627,7 @@ def train_5fold_cv(
         # Print validation results
         print(f"\nValidation Results (Fold {fold + 1}):")
         print(f"  Recording-level - Accuracy: {val_rec_accuracy:.2f}%, AUC: {val_rec_auc:.4f}, F1: {val_rec_f1:.4f}")
+        print(f"                    Sensitivity: {val_rec_sensitivity:.4f}, Specificity: {val_rec_specificity:.4f}")
         print(f"  Patient-level (Majority) - Accuracy: {val_maj_accuracy:.2f}%, F1: {val_maj_f1:.4f}")
         print(f"  Patient-level (Average) - Accuracy: {val_avg_accuracy:.2f}%, F1: {val_avg_f1:.4f}")
         
@@ -641,6 +663,11 @@ def train_5fold_cv(
         test_rec_f1 = f1_score(test_labels, test_preds)
         test_rec_cm = confusion_matrix(test_labels, test_preds)
         
+        # Calculate recording-level sensitivity/specificity
+        tn_rec, fp_rec, fn_rec, tp_rec = test_rec_cm.ravel()
+        test_rec_sensitivity = tp_rec / (tp_rec + fn_rec) if (tp_rec + fn_rec) > 0 else 0
+        test_rec_specificity = tn_rec / (tn_rec + fp_rec) if (tn_rec + fp_rec) > 0 else 0
+        
         # === Patient-level metrics (majority voting) ===
         test_pat_preds_maj, test_pat_labels_maj, test_pat_hc_maj = aggregate_predictions_by_patient(
             test_preds, test_probs, test_labels, test_recording_healthcodes, method='majority'
@@ -673,6 +700,11 @@ def train_5fold_cv(
         test_sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
         test_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
         
+        # Calculate sensitivity/specificity for average probability
+        tn_avg, fp_avg, fn_avg, tp_avg = test_avg_cm.ravel()
+        test_avg_sensitivity = tp_avg / (tp_avg + fn_avg) if (tp_avg + fn_avg) > 0 else 0
+        test_avg_specificity = tn_avg / (tn_avg + fp_avg) if (tn_avg + fp_avg) > 0 else 0
+        
         # Store test results
         test_fold_results = {
             'fold': fold + 1,
@@ -682,6 +714,8 @@ def train_5fold_cv(
                 'accuracy': test_rec_accuracy,
                 'auc': test_rec_auc,
                 'f1_score': test_rec_f1,
+                'sensitivity': test_rec_sensitivity,
+                'specificity': test_rec_specificity,
                 'confusion_matrix': test_rec_cm.tolist()
             },
             'patient_level_majority': {
@@ -696,6 +730,8 @@ def train_5fold_cv(
                 'accuracy': test_avg_accuracy,
                 'auc': test_avg_auc,
                 'f1_score': test_avg_f1,
+                'sensitivity': test_avg_sensitivity,
+                'specificity': test_avg_specificity,
                 'confusion_matrix': test_avg_cm.tolist()
             }
         }
@@ -706,12 +742,15 @@ def train_5fold_cv(
         print(f"  Patients: {len(test_pat_hc_maj)}, Recordings: {len(test_preds)}")
         print(f"\n  Recording-level:")
         print(f"    Accuracy: {test_rec_accuracy:.2f}%, AUC: {test_rec_auc:.4f}, F1: {test_rec_f1:.4f}")
+        print(f"    Sensitivity: {test_rec_sensitivity:.4f}, Specificity: {test_rec_specificity:.4f}")
+        print(f"    Confusion Matrix:\n{test_rec_cm}")
         print(f"\n  Patient-level (Majority Voting):")
         print(f"    Accuracy: {test_maj_accuracy:.2f}%, AUC: {test_maj_auc:.4f}, F1: {test_maj_f1:.4f}")
         print(f"    Sensitivity: {test_sensitivity:.4f}, Specificity: {test_specificity:.4f}")
         print(f"    Confusion Matrix:\n{test_maj_cm}")
         print(f"\n  Patient-level (Average Probability):")
         print(f"    Accuracy: {test_avg_accuracy:.2f}%, AUC: {test_avg_auc:.4f}, F1: {test_avg_f1:.4f}")
+        print(f"    Sensitivity: {test_avg_sensitivity:.4f}, Specificity: {test_avg_specificity:.4f}")
         print(f"    Confusion Matrix:\n{test_avg_cm}")
         
         # Save model
@@ -744,19 +783,27 @@ def train_5fold_cv(
     avg_test_avg_accuracy = np.mean([r['patient_level_average']['accuracy'] for r in all_test_results])
     avg_test_avg_auc = np.mean([r['patient_level_average']['auc'] for r in all_test_results])
     avg_test_avg_f1 = np.mean([r['patient_level_average']['f1_score'] for r in all_test_results])
+    avg_test_avg_sensitivity = np.mean([r['patient_level_average']['sensitivity'] for r in all_test_results])
+    avg_test_avg_specificity = np.mean([r['patient_level_average']['specificity'] for r in all_test_results])
     
     std_test_avg_accuracy = np.std([r['patient_level_average']['accuracy'] for r in all_test_results])
     std_test_avg_auc = np.std([r['patient_level_average']['auc'] for r in all_test_results])
     std_test_avg_f1 = np.std([r['patient_level_average']['f1_score'] for r in all_test_results])
+    std_test_avg_sensitivity = np.std([r['patient_level_average']['sensitivity'] for r in all_test_results])
+    std_test_avg_specificity = np.std([r['patient_level_average']['specificity'] for r in all_test_results])
     
     # === TEST SET SUMMARY (Recording-level) ===
     avg_test_rec_accuracy = np.mean([r['recording_level']['accuracy'] for r in all_test_results])
     avg_test_rec_auc = np.mean([r['recording_level']['auc'] for r in all_test_results])
     avg_test_rec_f1 = np.mean([r['recording_level']['f1_score'] for r in all_test_results])
+    avg_test_rec_sensitivity = np.mean([r['recording_level']['sensitivity'] for r in all_test_results])
+    avg_test_rec_specificity = np.mean([r['recording_level']['specificity'] for r in all_test_results])
     
     std_test_rec_accuracy = np.std([r['recording_level']['accuracy'] for r in all_test_results])
     std_test_rec_auc = np.std([r['recording_level']['auc'] for r in all_test_results])
     std_test_rec_f1 = np.std([r['recording_level']['f1_score'] for r in all_test_results])
+    std_test_rec_sensitivity = np.std([r['recording_level']['sensitivity'] for r in all_test_results])
+    std_test_rec_specificity = np.std([r['recording_level']['specificity'] for r in all_test_results])
     
     # Summary results
     summary = {
@@ -778,7 +825,11 @@ def train_5fold_cv(
             'avg_auc': avg_test_avg_auc,
             'std_auc': std_test_avg_auc,
             'avg_f1': avg_test_avg_f1,
-            'std_f1': std_test_avg_f1
+            'std_f1': std_test_avg_f1,
+            'avg_sensitivity': avg_test_avg_sensitivity,
+            'std_sensitivity': std_test_avg_sensitivity,
+            'avg_specificity': avg_test_avg_specificity,
+            'std_specificity': std_test_avg_specificity
         },
         'test_recording_level': {
             'avg_accuracy': avg_test_rec_accuracy,
@@ -786,7 +837,11 @@ def train_5fold_cv(
             'avg_auc': avg_test_rec_auc,
             'std_auc': std_test_rec_auc,
             'avg_f1': avg_test_rec_f1,
-            'std_f1': std_test_rec_f1
+            'std_f1': std_test_rec_f1,
+            'avg_sensitivity': avg_test_rec_sensitivity,
+            'std_sensitivity': std_test_rec_sensitivity,
+            'avg_specificity': avg_test_rec_specificity,
+            'std_specificity': std_test_rec_specificity
         },
         'validation_results': all_val_results,
         'test_fold_results': all_test_results,
@@ -821,9 +876,15 @@ def train_5fold_cv(
     print(f"Average Accuracy: {avg_test_avg_accuracy:.2f}% ± {std_test_avg_accuracy:.2f}%")
     print(f"Average AUC: {avg_test_avg_auc:.4f} ± {std_test_avg_auc:.4f}")
     print(f"Average F1 Score: {avg_test_avg_f1:.4f} ± {std_test_avg_f1:.4f}")
+    print(f"Average Sensitivity: {avg_test_avg_sensitivity:.4f} ± {std_test_avg_sensitivity:.4f}")
+    print(f"Average Specificity: {avg_test_avg_specificity:.4f} ± {std_test_avg_specificity:.4f}")
     
     print("\n--- TEST SET: Recording-level (for reference) ---")
     print(f"Average Accuracy: {avg_test_rec_accuracy:.2f}% ± {std_test_rec_accuracy:.2f}%")
+    print(f"Average AUC: {avg_test_rec_auc:.4f} ± {std_test_rec_auc:.4f}")
+    print(f"Average F1 Score: {avg_test_rec_f1:.4f} ± {std_test_rec_f1:.4f}")
+    print(f"Average Sensitivity: {avg_test_rec_sensitivity:.4f} ± {std_test_rec_sensitivity:.4f}")
+    print(f"Average Specificity: {avg_test_rec_specificity:.4f} ± {std_test_rec_specificity:.4f}")
     print(f"Average AUC: {avg_test_rec_auc:.4f} ± {std_test_rec_auc:.4f}")
     print(f"Average F1 Score: {avg_test_rec_f1:.4f} ± {std_test_rec_f1:.4f}")
     
