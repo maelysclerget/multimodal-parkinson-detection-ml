@@ -321,38 +321,39 @@ def merge_v1_and_v4_features(v1_csv, v4_csv, output_csv):
     df_v4_features_only = df_v4.drop(columns=['healthcode', 'record_id'])  # Drop duplicate metadata
     df_merged_temp = pd.merge(df_v1, df_v4_features_only, on='filename', how='inner')
 
-        # Dimension and filename checks before merge
-        print("\n--- Pre-merge checks ---")
-        v1_filenames = set(df_v1['filename'])
-        v4_filenames = set(df_v4['filename'])
-        print(f"  V1 unique filenames: {len(v1_filenames)}")
-        print(f"  V4 unique filenames: {len(v4_filenames)}")
-        common_filenames = v1_filenames & v4_filenames
-        print(f"  Filenames in both: {len(common_filenames)}")
-        missing_in_v1 = v4_filenames - v1_filenames
-        missing_in_v4 = v1_filenames - v4_filenames
-        if missing_in_v1:
-            print(f"  WARNING: {len(missing_in_v1)} filenames in V4 not in V1")
-        if missing_in_v4:
-            print(f"  WARNING: {len(missing_in_v4)} filenames in V1 not in V4")
-        print(f"  V1 columns: {df_v1.shape[1]}")
-        print(f"  V4 columns: {df_v4.shape[1]}")
+    # Dimension and filename checks before merge
+    print("\n--- Pre-merge checks ---")
+    v1_filenames = set(df_v1['filename'])
+    v4_filenames = set(df_v4['filename'])
+    print(f"  V1 unique filenames: {len(v1_filenames)}")
+    print(f"  V4 unique filenames: {len(v4_filenames)}")
+    common_filenames = v1_filenames & v4_filenames
+    print(f"  Filenames in both: {len(common_filenames)}")
+    missing_in_v1 = v4_filenames - v1_filenames
+    missing_in_v4 = v1_filenames - v4_filenames
+    if missing_in_v1:
+        print(f"  WARNING: {len(missing_in_v1)} filenames in V4 not in V1")
+    if missing_in_v4:
+        print(f"  WARNING: {len(missing_in_v4)} filenames in V1 not in V4")
+    print(f"  V1 columns: {df_v1.shape[1]}")
+    print(f"  V4 columns: {df_v4.shape[1]}")
 
     
     # CRITICAL: Reorder columns to ensure correct order
     # Order: filename, healthcode, record_id, then V1 features, then V4 features
     metadata_cols = ['filename', 'healthcode', 'record_id']
 
-        # Post-merge checks
-        print("\n--- Post-merge checks ---")
-        print(f"  Merged shape: {df_merged_temp.shape}")
-        print(f"  Expected rows: {len(common_filenames)}")
-        expected_cols = df_v1.shape[1] + df_v4_features_only.shape[1] - 1  # minus 1 for duplicate filename
-        print(f"  Expected columns: {expected_cols}")
-        if df_merged_temp.shape[0] != len(common_filenames):
-            print(f"  WARNING: Merged rows ({df_merged_temp.shape[0]}) != common filenames ({len(common_filenames)})")
-        if df_merged_temp.shape[1] != expected_cols:
-            print(f"  WARNING: Merged columns ({df_merged_temp.shape[1]}) != expected ({expected_cols})")
+    # Post-merge checks
+    print("\n--- Post-merge checks ---")
+    print(f"  Merged shape: {df_merged_temp.shape}")
+    print(f"  Expected rows: {len(common_filenames)}")
+    expected_cols = df_v1.shape[1] + df_v4_features_only.shape[1] - 1  # minus 1 for duplicate filename
+    print(f"  Expected columns: {expected_cols}")
+    if df_merged_temp.shape[0] != len(common_filenames):
+        print(f"  WARNING: Merged rows ({df_merged_temp.shape[0]}) != common filenames ({len(common_filenames)})")
+    if df_merged_temp.shape[1] != expected_cols:
+        print(f"  WARNING: Merged columns ({df_merged_temp.shape[1]}) != expected ({expected_cols})")
+            
     v1_feature_cols = [col for col in df_v1.columns if col not in metadata_cols]
     v4_feature_cols = [col for col in df_v4_features_only.columns if col not in metadata_cols]
     
@@ -411,7 +412,7 @@ if __name__ == "__main__":
     
     V1_CSV = os.path.join(FEATURES_DIR, "acoustic_features.csv")
     V4_CSV = os.path.join(FEATURES_DIR, "acoustic_features_v4_only.csv")
-    V2_CSV = os.path.join(FEATURES_DIR, "acoustic_features_v2.csv")
+    V2_CSV = os.path.join(FEATURES_DIR, "acoustic_features_vf.csv")
     
     SAMPLE_RATE = 44100
     

@@ -461,6 +461,9 @@ def train_5fold_cv(
     all_val_results = []
     all_test_results = []
     
+    # Store best thresholds for each fold
+    best_thresholds = []
+
     # 5-fold cross-validation
     for fold in range(5):
         print("="*80)
@@ -578,24 +581,86 @@ def train_5fold_cv(
         val_maj_f1 = f1_score(val_pat_labels_maj, val_pat_preds_maj)
         val_maj_cm = confusion_matrix(val_pat_labels_maj, val_pat_preds_maj)
         
-        # === Patient-level metrics (average probability) ===
+        # === Patient-level metrics (average probability, with threshold tuning) ===
+        def tune_threshold(preds, probs, labels, healthcodes):
+            from collections import defaultdict
+            from sklearn.metrics import f1_score, accuracy_score
+            best_thr = 0.5
+            best_f1 = 0.0
+            best_acc = 0.0
+            best_preds = None
+            best_labels = None
+            best_cm = None
+            best_sens = None
+            best_spec = None
+            thresholds = np.arange(0.1, 0.91, 0.01)
+            for thr in thresholds:
+                # Aggregate by patient using threshold
+                patient_data = defaultdict(lambda: {'probs': [], 'label': None})
+                for i, hc in enumerate(healthcodes):
+                    patient_data[hc]['probs'].append(probs[i])
+                    patient_data[hc]['label'] = labels[i]
+                patient_preds = []
+                patient_labels = []
+                for hc, data in patient_data.items():
+                    avg_prob = np.mean(data['probs'])
+                    pred = 1 if avg_prob > thr else 0
+                    patient_preds.append(pred)
+                    patient_labels.append(data['label'])
+                acc = accuracy_score(patient_labels, patient_preds)
+                f1 = f1_score(patient_labels, patient_preds)
+                cm = confusion_matrix(patient_labels, patient_preds)
+                tn, fp, fn, tp = cm.ravel()
+                sens = tp / (tp + fn) if (tp + fn) > 0 else 0
+                spec = tn / (tn + fp) if (tn + fp) > 0 else 0
+                # Choose best by F1, then accuracy
+                if f1 > best_f1 or (f1 == best_f1 and acc > best_acc):
+                    best_f1 = f1
+                    best_acc = acc
+                    best_thr = thr
+                    best_preds = patient_preds
+                    best_labels = patient_labels
+                    best_cm = cm
+                    best_sens = sens
+                    best_spec = spec
+            return best_thr, best_preds, best_labels, best_f1, best_acc, best_cm, best_sens, best_spec
+
+        best_thr, val_pat_preds_thr, val_pat_labels_thr, val_thr_f1, val_thr_acc, val_thr_cm, val_thr_sens, val_thr_spec = tune_threshold(
+            val_preds, val_probs, val_labels, val_recording_healthcodes
+        )
+        best_thresholds.append(best_thr)
+        
+        # Compute AUC for threshold-tuned patient-level predictions
+        from sklearn.metrics import roc_auc_score
+        unique_healthcodes = list(set(val_recording_healthcodes))
+        patient_avg_probs_thr = []
+        for hc in unique_healthcodes:
+            indices = [i for i, h in enumerate(val_recording_healthcodes) if h == hc]
+            avg_prob = np.mean([val_probs[i] for i in indices])
+            patient_avg_probs_thr.append(avg_prob)
+        val_thr_auc = roc_auc_score(val_pat_labels_thr, patient_avg_probs_thr)
+
+        # Calculate metrics for majority and average (0.5) for reference
+        val_pat_preds_maj, val_pat_labels_maj, _ = aggregate_predictions_by_patient(
+            val_preds, val_probs, val_labels, val_recording_healthcodes, method='majority'
+        )
+        val_maj_accuracy = 100 * np.mean(val_pat_preds_maj == val_pat_labels_maj)
+        val_maj_f1 = f1_score(val_pat_labels_maj, val_pat_preds_maj)
+        val_maj_cm = confusion_matrix(val_pat_labels_maj, val_pat_preds_maj)
+        tn, fp, fn, tp = val_maj_cm.ravel()
+        val_sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+        val_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+
         val_pat_preds_avg, val_pat_labels_avg, _ = aggregate_predictions_by_patient(
             val_preds, val_probs, val_labels, val_recording_healthcodes, method='average'
         )
         val_avg_accuracy = 100 * np.mean(val_pat_preds_avg == val_pat_labels_avg)
         val_avg_f1 = f1_score(val_pat_labels_avg, val_pat_preds_avg)
         val_avg_cm = confusion_matrix(val_pat_labels_avg, val_pat_preds_avg)
-        
-        # Calculate sensitivity/specificity for majority voting
-        tn, fp, fn, tp = val_maj_cm.ravel()
-        val_sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
-        val_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-        
-        # Calculate sensitivity/specificity for average probability
         tn_avg, fp_avg, fn_avg, tp_avg = val_avg_cm.ravel()
         val_avg_sensitivity = tp_avg / (tp_avg + fn_avg) if (tp_avg + fn_avg) > 0 else 0
         val_avg_specificity = tn_avg / (tn_avg + fp_avg) if (tn_avg + fp_avg) > 0 else 0
-        
+
         # Store validation results
         val_fold_results = {
             'fold': fold + 1,
@@ -620,16 +685,26 @@ def train_5fold_cv(
                 'sensitivity': val_avg_sensitivity,
                 'specificity': val_avg_specificity,
                 'confusion_matrix': val_avg_cm.tolist()
+            },
+            'patient_level_threshold_tuned': {
+                'threshold': best_thr,
+                'auc': val_thr_auc,
+                'accuracy': 100 * val_thr_acc,
+                'f1_score': val_thr_f1,
+                'sensitivity': val_thr_sens,
+                'specificity': val_thr_spec,
+                'confusion_matrix': val_thr_cm.tolist()
             }
         }
         all_val_results.append(val_fold_results)
-        
+
         # Print validation results
         print(f"\nValidation Results (Fold {fold + 1}):")
         print(f"  Recording-level - Accuracy: {val_rec_accuracy:.2f}%, AUC: {val_rec_auc:.4f}, F1: {val_rec_f1:.4f}")
         print(f"                    Sensitivity: {val_rec_sensitivity:.4f}, Specificity: {val_rec_specificity:.4f}")
         print(f"  Patient-level (Majority) - Accuracy: {val_maj_accuracy:.2f}%, F1: {val_maj_f1:.4f}")
-        print(f"  Patient-level (Average) - Accuracy: {val_avg_accuracy:.2f}%, F1: {val_avg_f1:.4f}")
+        print(f"  Patient-level (Average, thr=0.5) - Accuracy: {val_avg_accuracy:.2f}%, F1: {val_avg_f1:.4f}")
+        print(f"  Patient-level (Threshold tuned) - Accuracy: {100*val_thr_acc:.2f}%, F1: {val_thr_f1:.4f}, Threshold: {best_thr:.2f}")
         
         # ====================================================================
         # TEST SET EVALUATION (final performance)
@@ -686,7 +761,34 @@ def train_5fold_cv(
         pat_probs_for_auc = [np.mean(patient_avg_probs[hc]) for hc in test_pat_hc_maj]
         test_maj_auc = roc_auc_score(test_pat_labels_maj, pat_probs_for_auc)
         
-        # === Patient-level metrics (average probability) ===
+        # === Patient-level metrics (average probability, threshold tuned) ===
+        def aggregate_patient_threshold(probs, labels, healthcodes, thr):
+            from collections import defaultdict
+            patient_data = defaultdict(lambda: {'probs': [], 'label': None})
+            for i, hc in enumerate(healthcodes):
+                patient_data[hc]['probs'].append(probs[i])
+                patient_data[hc]['label'] = labels[i]
+            patient_preds = []
+            patient_labels = []
+            for hc, data in patient_data.items():
+                avg_prob = np.mean(data['probs'])
+                pred = 1 if avg_prob > thr else 0
+                patient_preds.append(pred)
+                patient_labels.append(data['label'])
+            return np.array(patient_preds), np.array(patient_labels)
+
+        test_pat_preds_thr, test_pat_labels_thr = aggregate_patient_threshold(
+            test_probs, test_labels, test_recording_healthcodes, best_thr
+        )
+        from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+        test_thr_accuracy = 100 * accuracy_score(test_pat_labels_thr, test_pat_preds_thr)
+        test_thr_f1 = f1_score(test_pat_labels_thr, test_pat_preds_thr)
+        test_thr_cm = confusion_matrix(test_pat_labels_thr, test_pat_preds_thr)
+        tn_thr, fp_thr, fn_thr, tp_thr = test_thr_cm.ravel()
+        test_thr_sensitivity = tp_thr / (tp_thr + fn_thr) if (tp_thr + fn_thr) > 0 else 0
+        test_thr_specificity = tn_thr / (tn_thr + fp_thr) if (tn_thr + fp_thr) > 0 else 0
+
+        # For reference: patient-level average probability (thr=0.5)
         test_pat_preds_avg, test_pat_labels_avg, _ = aggregate_predictions_by_patient(
             test_preds, test_probs, test_labels, test_recording_healthcodes, method='average'
         )
@@ -694,17 +796,10 @@ def train_5fold_cv(
         test_avg_f1 = f1_score(test_pat_labels_avg, test_pat_preds_avg)
         test_avg_cm = confusion_matrix(test_pat_labels_avg, test_pat_preds_avg)
         test_avg_auc = roc_auc_score(test_pat_labels_avg, pat_probs_for_auc)
-        
-        # Calculate sensitivity/specificity for majority voting
-        tn, fp, fn, tp = test_maj_cm.ravel()
-        test_sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
-        test_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-        
-        # Calculate sensitivity/specificity for average probability
         tn_avg, fp_avg, fn_avg, tp_avg = test_avg_cm.ravel()
         test_avg_sensitivity = tp_avg / (tp_avg + fn_avg) if (tp_avg + fn_avg) > 0 else 0
         test_avg_specificity = tn_avg / (tn_avg + fp_avg) if (tn_avg + fp_avg) > 0 else 0
-        
+
         # Store test results
         test_fold_results = {
             'fold': fold + 1,
@@ -722,8 +817,8 @@ def train_5fold_cv(
                 'accuracy': test_maj_accuracy,
                 'auc': test_maj_auc,
                 'f1_score': test_maj_f1,
-                'sensitivity': test_sensitivity,
-                'specificity': test_specificity,
+                'sensitivity': None,  # Will be set below
+                'specificity': None,  # Will be set below
                 'confusion_matrix': test_maj_cm.tolist()
             },
             'patient_level_average': {
@@ -733,77 +828,87 @@ def train_5fold_cv(
                 'sensitivity': test_avg_sensitivity,
                 'specificity': test_avg_specificity,
                 'confusion_matrix': test_avg_cm.tolist()
+            },
+            'patient_level_threshold_tuned': {
+                'threshold': best_thr,
+                'accuracy': test_thr_accuracy,
+                'f1_score': test_thr_f1,
+                'sensitivity': test_thr_sensitivity,
+                'specificity': test_thr_specificity,
+                'confusion_matrix': test_thr_cm.tolist()
             }
         }
+        # Calculate sensitivity and specificity for patient_level_majority
+        if test_maj_cm.shape == (2, 2):
+            tn, fp, fn, tp = test_maj_cm.ravel()
+            test_fold_results['patient_level_majority']['sensitivity'] = tp / (tp + fn) if (tp + fn) > 0 else 0
+            test_fold_results['patient_level_majority']['specificity'] = tn / (tn + fp) if (tn + fp) > 0 else 0
+        else:
+            test_fold_results['patient_level_majority']['sensitivity'] = None
+            test_fold_results['patient_level_majority']['specificity'] = None
         all_test_results.append(test_fold_results)
-        
+
         # Print test results
-        print(f"\nTest Results (Fold {fold + 1}):")
-        print(f"  Patients: {len(test_pat_hc_maj)}, Recordings: {len(test_preds)}")
-        print(f"\n  Recording-level:")
-        print(f"    Accuracy: {test_rec_accuracy:.2f}%, AUC: {test_rec_auc:.4f}, F1: {test_rec_f1:.4f}")
-        print(f"    Sensitivity: {test_rec_sensitivity:.4f}, Specificity: {test_rec_specificity:.4f}")
-        print(f"    Confusion Matrix:\n{test_rec_cm}")
-        print(f"\n  Patient-level (Majority Voting):")
-        print(f"    Accuracy: {test_maj_accuracy:.2f}%, AUC: {test_maj_auc:.4f}, F1: {test_maj_f1:.4f}")
-        print(f"    Sensitivity: {test_sensitivity:.4f}, Specificity: {test_specificity:.4f}")
-        print(f"    Confusion Matrix:\n{test_maj_cm}")
-        print(f"\n  Patient-level (Average Probability):")
-        print(f"    Accuracy: {test_avg_accuracy:.2f}%, AUC: {test_avg_auc:.4f}, F1: {test_avg_f1:.4f}")
-        print(f"    Sensitivity: {test_avg_sensitivity:.4f}, Specificity: {test_avg_specificity:.4f}")
-        print(f"    Confusion Matrix:\n{test_avg_cm}")
-        
-        # Save model
-        model_path = os.path.join(output_dir, f'model_fold_{fold+1}.pth')
-        torch.save(trained_model.state_dict(), model_path)
-        print(f"\n  Model saved to: {model_path}\n")
-    
-    # ========================================================================
-    # AGGREGATE RESULTS ACROSS ALL FOLDS
-    # ========================================================================
-    
-    print("\n" + "="*80)
-    print("AGGREGATING RESULTS ACROSS 5 FOLDS")
-    print("="*80)
-    
-    # === TEST SET SUMMARY (Patient-level - Majority Voting) ===
-    avg_test_maj_accuracy = np.mean([r['patient_level_majority']['accuracy'] for r in all_test_results])
-    avg_test_maj_auc = np.mean([r['patient_level_majority']['auc'] for r in all_test_results])
-    avg_test_maj_f1 = np.mean([r['patient_level_majority']['f1_score'] for r in all_test_results])
-    avg_test_maj_sensitivity = np.mean([r['patient_level_majority']['sensitivity'] for r in all_test_results])
-    avg_test_maj_specificity = np.mean([r['patient_level_majority']['specificity'] for r in all_test_results])
-    
-    std_test_maj_accuracy = np.std([r['patient_level_majority']['accuracy'] for r in all_test_results])
-    std_test_maj_auc = np.std([r['patient_level_majority']['auc'] for r in all_test_results])
-    std_test_maj_f1 = np.std([r['patient_level_majority']['f1_score'] for r in all_test_results])
-    std_test_maj_sensitivity = np.std([r['patient_level_majority']['sensitivity'] for r in all_test_results])
-    std_test_maj_specificity = np.std([r['patient_level_majority']['specificity'] for r in all_test_results])
-    
-    # === TEST SET SUMMARY (Patient-level - Average Probability) ===
-    avg_test_avg_accuracy = np.mean([r['patient_level_average']['accuracy'] for r in all_test_results])
-    avg_test_avg_auc = np.mean([r['patient_level_average']['auc'] for r in all_test_results])
-    avg_test_avg_f1 = np.mean([r['patient_level_average']['f1_score'] for r in all_test_results])
-    avg_test_avg_sensitivity = np.mean([r['patient_level_average']['sensitivity'] for r in all_test_results])
-    avg_test_avg_specificity = np.mean([r['patient_level_average']['specificity'] for r in all_test_results])
-    
-    std_test_avg_accuracy = np.std([r['patient_level_average']['accuracy'] for r in all_test_results])
-    std_test_avg_auc = np.std([r['patient_level_average']['auc'] for r in all_test_results])
-    std_test_avg_f1 = np.std([r['patient_level_average']['f1_score'] for r in all_test_results])
-    std_test_avg_sensitivity = np.std([r['patient_level_average']['sensitivity'] for r in all_test_results])
-    std_test_avg_specificity = np.std([r['patient_level_average']['specificity'] for r in all_test_results])
-    
-    # === TEST SET SUMMARY (Recording-level) ===
-    avg_test_rec_accuracy = np.mean([r['recording_level']['accuracy'] for r in all_test_results])
-    avg_test_rec_auc = np.mean([r['recording_level']['auc'] for r in all_test_results])
-    avg_test_rec_f1 = np.mean([r['recording_level']['f1_score'] for r in all_test_results])
-    avg_test_rec_sensitivity = np.mean([r['recording_level']['sensitivity'] for r in all_test_results])
-    avg_test_rec_specificity = np.mean([r['recording_level']['specificity'] for r in all_test_results])
-    
-    std_test_rec_accuracy = np.std([r['recording_level']['accuracy'] for r in all_test_results])
-    std_test_rec_auc = np.std([r['recording_level']['auc'] for r in all_test_results])
-    std_test_rec_f1 = np.std([r['recording_level']['f1_score'] for r in all_test_results])
-    std_test_rec_sensitivity = np.std([r['recording_level']['sensitivity'] for r in all_test_results])
-    std_test_rec_specificity = np.std([r['recording_level']['specificity'] for r in all_test_results])
+        val_fold_results = {
+            'fold': fold + 1,
+            'recording_level': {
+                'accuracy': val_rec_accuracy,
+                'auc': val_rec_auc,
+                'f1_score': val_rec_f1,
+                'sensitivity': val_rec_sensitivity,
+                'specificity': val_rec_specificity,
+                'confusion_matrix': val_rec_cm.tolist()
+            },
+            'patient_level_majority': {
+                'accuracy': val_maj_accuracy,
+                'f1_score': val_maj_f1,
+                'sensitivity': val_sensitivity,
+                'specificity': val_specificity,
+                'confusion_matrix': val_maj_cm.tolist()
+            },
+            'patient_level_average': {
+                'accuracy': val_avg_accuracy,
+                'f1_score': val_avg_f1,
+                'sensitivity': val_avg_sensitivity,
+                'specificity': val_avg_specificity,
+                'confusion_matrix': val_avg_cm.tolist()
+            },
+            'patient_level_threshold_tuned': {
+                'threshold': best_thr,
+                'auc': val_thr_auc,
+                'accuracy': 100 * val_thr_acc,
+                'f1_score': val_thr_f1,
+                'sensitivity': val_thr_sens,
+                'specificity': val_thr_spec,
+                'confusion_matrix': val_thr_cm.tolist()
+            }
+        }
+        all_val_results.append(val_fold_results)
+
+    def safe_mean_std(key, subkey):
+        vals = [r[key][subkey] for r in all_test_results if subkey in r[key] and r[key][subkey] is not None]
+        if len(vals) > 0:
+            return np.mean(vals), np.std(vals)
+        else:
+            return None, None
+
+    avg_test_maj_accuracy, std_test_maj_accuracy = safe_mean_std('patient_level_majority', 'accuracy')
+    avg_test_maj_auc, std_test_maj_auc = safe_mean_std('patient_level_majority', 'auc')
+    avg_test_maj_f1, std_test_maj_f1 = safe_mean_std('patient_level_majority', 'f1_score')
+    avg_test_maj_sensitivity, std_test_maj_sensitivity = safe_mean_std('patient_level_majority', 'sensitivity')
+    avg_test_maj_specificity, std_test_maj_specificity = safe_mean_std('patient_level_majority', 'specificity')
+
+    avg_test_avg_accuracy, std_test_avg_accuracy = safe_mean_std('patient_level_average', 'accuracy')
+    avg_test_avg_auc, std_test_avg_auc = safe_mean_std('patient_level_average', 'auc')
+    avg_test_avg_f1, std_test_avg_f1 = safe_mean_std('patient_level_average', 'f1_score')
+    avg_test_avg_sensitivity, std_test_avg_sensitivity = safe_mean_std('patient_level_average', 'sensitivity')
+    avg_test_avg_specificity, std_test_avg_specificity = safe_mean_std('patient_level_average', 'specificity')
+
+    avg_test_rec_accuracy, std_test_rec_accuracy = safe_mean_std('recording_level', 'accuracy')
+    avg_test_rec_auc, std_test_rec_auc = safe_mean_std('recording_level', 'auc')
+    avg_test_rec_f1, std_test_rec_f1 = safe_mean_std('recording_level', 'f1_score')
+    avg_test_rec_sensitivity, std_test_rec_sensitivity = safe_mean_std('recording_level', 'sensitivity')
+    avg_test_rec_specificity, std_test_rec_specificity = safe_mean_std('recording_level', 'specificity')
     
     # Summary results
     summary = {
@@ -843,38 +948,9 @@ def train_5fold_cv(
             'avg_specificity': avg_test_rec_specificity,
             'std_specificity': std_test_rec_specificity
         },
-        'validation_results': all_val_results,
         'test_fold_results': all_test_results,
-        'config': {
-            'batch_size': batch_size,
-            'num_epochs': num_epochs,
-            'learning_rate': learning_rate,
-            'hidden_sizes': hidden_sizes,
-            'dropout': dropout,
-            'num_features': len(feature_cols)
-        }
+        'val_fold_results': all_val_results
     }
-    
-    # Save summary
-    summary_path = os.path.join(output_dir, 'V1_summary.json')
-    with open(summary_path, 'w') as f:
-        json.dump(summary, f, indent=2)
-    
-    # Print final summary
-    print("\n" + "="*80)
-    print("5-FOLD CROSS-VALIDATION SUMMARY")
-    print("="*80)
-    
-    print("\n--- TEST SET: Patient-level (Majority Voting) ---")
-    print(f"Average Accuracy: {avg_test_maj_accuracy:.2f}% ± {std_test_maj_accuracy:.2f}%")
-    print(f"Average AUC: {avg_test_maj_auc:.4f} ± {std_test_maj_auc:.4f}")
-    print(f"Average F1 Score: {avg_test_maj_f1:.4f} ± {std_test_maj_f1:.4f}")
-    print(f"Average Sensitivity: {avg_test_maj_sensitivity:.4f} ± {std_test_maj_sensitivity:.4f}")
-    print(f"Average Specificity: {avg_test_maj_specificity:.4f} ± {std_test_maj_specificity:.4f}")
-    
-    print("\n--- TEST SET: Patient-level (Average Probability) ---")
-    print(f"Average Accuracy: {avg_test_avg_accuracy:.2f}% ± {std_test_avg_accuracy:.2f}%")
-    print(f"Average AUC: {avg_test_avg_auc:.4f} ± {std_test_avg_auc:.4f}")
     print(f"Average F1 Score: {avg_test_avg_f1:.4f} ± {std_test_avg_f1:.4f}")
     print(f"Average Sensitivity: {avg_test_avg_sensitivity:.4f} ± {std_test_avg_sensitivity:.4f}")
     print(f"Average Specificity: {avg_test_avg_specificity:.4f} ± {std_test_avg_specificity:.4f}")
@@ -888,7 +964,7 @@ def train_5fold_cv(
     print(f"Average AUC: {avg_test_rec_auc:.4f} ± {std_test_rec_auc:.4f}")
     print(f"Average F1 Score: {avg_test_rec_f1:.4f} ± {std_test_rec_f1:.4f}")
     
-    print(f"\nResults saved to: {summary_path}")
+    print(f"\nResults saved to output directory: {output_dir}")
     print("="*80)
     
     return summary

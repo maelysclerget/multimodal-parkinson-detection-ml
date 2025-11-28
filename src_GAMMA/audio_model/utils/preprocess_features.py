@@ -64,7 +64,7 @@ def load_data(features_csv, labels_csv, train_folds_csv):
     train_healthcodes = set(df_train[df_train['subset'] == 'train']['healthCode'].unique())
     
     print(f"  Training healthcodes (across all folds): {len(train_healthcodes)}")
-    print(f"  Training recordings: {df_features[df_features['healthcode'].isin(train_healthcodes)].shape[0]}")
+    print(f"  Training recordings: {df_features[df_features['healthCode'].isin(train_healthcodes)].shape[0]}")
     
     print("="*80 + "\n")
     
@@ -400,13 +400,13 @@ if __name__ == "__main__":
     parser.add_argument(
         '--input',
         type=str,
-        default='/mloscratch/users/gnahas/data/features/acoustic_features_v2.csv',
+        default='/mloscratch/users/gnahas/data/features/acoustic_features_vf.csv',
         help='Input features CSV'
     )
     parser.add_argument(
         '--output',
         type=str,
-        default='/mloscratch/users/gnahas/data/features/acoustic_features_v2_clean.csv',
+        default='/mloscratch/users/gnahas/data/features/Preprocessed/acoustic_features_vf_clean.csv',
         help='Output preprocessed CSV'
     )
     parser.add_argument(

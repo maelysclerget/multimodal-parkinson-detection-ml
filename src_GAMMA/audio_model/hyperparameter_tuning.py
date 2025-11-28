@@ -17,15 +17,15 @@ HYPERPARAMETER_GRID = {
     ],
     'dropout': [0.5, 0.7],  # High dropout only
     'batch_size': [64],  # Fixed batch size
-    'class_weight': [1.5, 2.5, 3.5],  # Moderate to strong (1.32 was too weak, 4.0 might be extreme)
+    'class_weight': [1.75, 2.5],  # Moderate to strong (1.32 was too weak, 4.0 might be extreme)
 }
 
 # Fixed parameters
-FEATURES_CSV = "/mloscratch/users/gnahas/data/features/acoustic_features.csv"
+FEATURES_CSV = "/mloscratch/users/gnahas/data/features/Preprocessed/acoustic_features_vf_clean.csv"
 LABELS_CSV = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
 TRAIN_FOLDS_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
 VAL_TEST_FOLDS_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
-BASE_OUTPUT_DIR = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/MLP_Tuning/V3"
+BASE_OUTPUT_DIR = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/MLP_Tuning/V4"
 NUM_EPOCHS = 100
 
 
