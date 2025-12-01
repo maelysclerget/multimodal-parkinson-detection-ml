@@ -145,10 +145,21 @@ csv_dir.mkdir(parents=True, exist_ok=True)
 # Save to CSV
 if sequences_data:
     seq_df = pd.DataFrame(sequences_data)
-    seq_df.to_csv(csv_dir / 'tapping_event_sequences.csv', index=False)
+    seq_df.to_csv(csv_dir / 'tapping_event_sequences_session.csv', index=False)
     print(f"✓ Event sequences saved: {len(seq_df)} rows")
+    #Makes no sense to aggregate by patient because there is TappedButtonId per event
 
 if features_data:
     feat_df = pd.DataFrame(features_data)
     print(f"✓ Statistical features saved: {len(feat_df)} rows")
-    feat_df.to_csv(csv_dir / 'tapping_statistical_features.csv', index=False)
+    feat_df.to_csv(csv_dir / 'tapping_statistical_features_sessions.csv', index=False)
+    
+    # ===== Aggregate features by healthcode =====
+    # Group by healthCode and take mean of all numeric features
+    numeric_cols = feat_df.select_dtypes(include=[np.number]).columns
+    aggregated_df = feat_df.groupby('healthCode')[numeric_cols].mean()
+    aggregated_df = aggregated_df.reset_index()
+
+    aggregated_df.to_csv(csv_dir / 'tapping_statistical_features_patient.csv', index=False)
+    print(f"✓ Aggregated features by healthcode saved: {len(aggregated_df)} rows")
+    print(f"  Sample:\n{aggregated_df.head()}")

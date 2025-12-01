@@ -107,9 +107,9 @@ def plot_speed_heatmap(df, patient_id, record_id, output_path, vmin, vmax):
 def main():
     
     # Paths
-    data_dir = Path("src_GAMMA/data/raw_tapping")
-    output_base_dir = Path("src_GAMMA/tapping-heatmaps")
-    paired_file = Path("src_GAMMA/paired_healthcode.csv")
+    data_dir = Path("/mloscratch/users/clerget/data/raw_tapping")
+    output_base_dir = Path("/mloscratch/users/clerget/data/tapping_heatmaps")
+    paired_file = Path("/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv")
     
     output_base_dir.mkdir(exist_ok=True, parents=True)
 
@@ -151,7 +151,7 @@ def main():
     total_errors = 0
 
     # Process only first 3 patients
-    for patient_id, files in sorted(patients.items())[:3]:      #for all patients, replace by for patient_id, files in patients.items():
+    for patient_id, files in patients.items(): #for patient_id, files in sorted(patients.items())[:3]:      #for all patients, replace by for patient_id, files in patients.items():
         print(f"\nProcessing patient {patient_id} ({len(files)} total trials)...")
 
         selected_files = files  # Use all files
