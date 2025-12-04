@@ -8,8 +8,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.utils import class_weight
 import os
 from pathlib import Path
-from IntermediateFusionCNN import IntermediateFusionCNN
-from IntermediateFusionMLP import IntermediateFusionMLP
+from IntermediateFusionNN.IntermediateFusionCNN import IntermediateFusionCNN
+from IntermediateFusionNN.IntermediateFusionMLP import IntermediateFusionMLP
 
 
 def cross_validation_5fold_intermediate_fusion(
