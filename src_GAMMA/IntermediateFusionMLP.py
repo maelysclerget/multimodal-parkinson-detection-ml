@@ -102,7 +102,7 @@ class IntermediateFusionMLP(nn.Module):
     
     def fit(self, train_image_embeds: torch.Tensor, train_audio_embeds: torch.Tensor,
             train_labels: torch.Tensor, epochs: int = 50, batch_size: int = 32,
-            lr: float = 1e-3, verbose: bool = True):
+            lr: float = 1e-3, weight_decay: float = 0, verbose: bool = True):
         """
         Fit the model on training data.
         
@@ -113,6 +113,7 @@ class IntermediateFusionMLP(nn.Module):
             epochs: Number of training epochs (default: 50)
             batch_size: Batch size (default: 32)
             lr: Learning rate (default: 1e-3)
+            weight_decay: L2 penalization coefficient (default: 0)
             verbose: Whether the method should output verbal execution tracing (default: True)
         """
         # Reset history
@@ -124,7 +125,7 @@ class IntermediateFusionMLP(nn.Module):
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         
         criterion = nn.CrossEntropyLoss()
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        optimizer = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
         
         for epoch in range(epochs):
             self.train()
