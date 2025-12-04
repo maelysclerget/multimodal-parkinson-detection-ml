@@ -11,6 +11,7 @@ class IntermediateFusionMLP(nn.Module):
                  feature_2_dim: int = 768,
                  hidden_dims: list = [512, 256],
                  dropout: float = 0.3,
+                 pooling_type: str = 'max',
                  verbose: bool = True):
         """
         Early fusion model that concatenates two feature embeddings,
@@ -21,6 +22,7 @@ class IntermediateFusionMLP(nn.Module):
             feature_2_dim: Dimension of second feature embeddings (default: 768)
             hidden_dims: List of hidden layer dimensions (default: [512, 256])
             dropout: Dropout probability (default: 0.3)
+            pooling_type: Type of pooling layer - 'max', 'avg', or 'adaptive_avg' (default: 'max')
             verbose: Whether the constructor should output verbal execution tracing (default: True)
         """
         super().__init__()
@@ -28,12 +30,26 @@ class IntermediateFusionMLP(nn.Module):
         self.feature_1_dim = feature_1_dim
         self.feature_2_dim = feature_2_dim
         self.fused_dim = feature_1_dim + feature_2_dim
+        self.pooling_type = pooling_type.lower()
+        
+        # Validate pooling type
+        valid_pooling_types = ['max', 'avg', 'adaptive_avg']
+        if self.pooling_type not in valid_pooling_types:
+            raise ValueError(f"pooling_type must be one of {valid_pooling_types}, got {self.pooling_type}")
         
         # Reshape fused embeddings to 2D: (batch, 1, H, W)
         # Using square-ish dimensions for the feature map
         self.H = int(self.fused_dim ** 0.5)
         self.W = (self.fused_dim + self.H - 1) // self.H  # Ceiling division
         self.padded_dim = self.H * self.W
+        
+        # Create pooling layer based on pooling_type
+        if self.pooling_type == 'max':
+            pooling_layer = nn.MaxPool2d(kernel_size=2, stride=2)
+        elif self.pooling_type == 'avg':
+            pooling_layer = nn.AvgPool2d(kernel_size=2, stride=2)
+        elif self.pooling_type == 'adaptive_avg':
+            pooling_layer = nn.AdaptiveAvgPool2d(output_size=(None, None))
         
         # Build CNN layers
         layers = []
@@ -44,7 +60,7 @@ class IntermediateFusionMLP(nn.Module):
                 nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1),
                 nn.BatchNorm2d(hidden_dim),
                 nn.ReLU(),
-                nn.MaxPool2d(kernel_size=2, stride=2),
+                pooling_layer,
                 nn.Dropout2d(dropout)
             ])
             in_channels = hidden_dim
@@ -82,6 +98,7 @@ class IntermediateFusionMLP(nn.Module):
             print(f"Fused input dimension: {self.fused_dim}")
             print(f"Reshaped to: (1, {self.H}, {self.W}) [padded_dim={self.padded_dim}]")
             print(f"CNN architecture: {len(hidden_dims)} conv layers with channels {hidden_dims}")
+            print(f"Pooling type: {self.pooling_type}")
             print(f"Flattened size before FC: {self.flattened_size}")
             print(f"Output: 1 (binary classification)")
             print(f"Device: {self.device}")
