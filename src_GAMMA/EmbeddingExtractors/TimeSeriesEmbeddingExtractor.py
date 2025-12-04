@@ -37,23 +37,31 @@ class TimeSeriesEmbeddingExtractor:
     def preprocess(self, time_series: Union[np.ndarray, torch.Tensor, List],
                    sampling_rate: int = 16000) -> torch.Tensor:
         """
-        Preprocess a single time series.
+        Preprocess a single time series using Wav2Vec2Processor.
+        
+        Normalizes the input using its own statistics (z-score normalization)
+        before processing with the Wav2Vec2Processor.
         
         Args:
             time_series: 1D array of the time series / audio waveform
             sampling_rate: Sampling rate in Hz (default: 16000)
             
         Returns:
-            Preprocessed tensor
+            Preprocessed tensor normalized by the input's own statistics
         """
         if isinstance(time_series, list):
-            time_series = torch.tensor(time_series, dtype=torch.float32)
+            time_series = np.array(time_series, dtype=np.float32)
+        elif isinstance(time_series, torch.Tensor):
+            time_series = time_series.cpu().numpy()
+        else:
+            time_series = np.array(time_series, dtype=np.float32)
         
+        
+        # Process with Wav2Vec2Processor
         inputs = self.processor(
             time_series, 
             sampling_rate=sampling_rate, 
             return_tensors="pt",
-            padding=True
         )
 
         return inputs.input_values.squeeze(0)
@@ -156,28 +164,5 @@ class TimeSeriesEmbeddingExtractor:
         if embeddings:
             return torch.cat(embeddings, dim=0)
         else:
-            return torch.empty(0, self.embedding_dim)
+            return torch.empty(0, self.hidden_size)
 
-
-if __name__ == "__main__":
-    extractor = TimeSeriesEmbeddingExtractor(
-        model_name='facebook/wav2vec2-base',
-        pooling='mean'
-    )
-    
-    sample_rate = 16000
-    duration_seconds = 2
-    
-    time_series_list = [
-        np.random.randn(sample_rate * duration_seconds) for _ in range(5)
-    ]
-    
-    # Extract embeddings
-    embeddings = extractor.extract_embeddings(
-        time_series_list, 
-        sampling_rate=sample_rate,
-        batch_size=2
-    )
-    
-    print(f"\nFinal embeddings shape: {embeddings.shape}")
-    # Output: torch.Size([5, 512])

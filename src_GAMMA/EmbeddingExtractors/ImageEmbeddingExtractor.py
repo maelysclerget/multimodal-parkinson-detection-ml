@@ -40,17 +40,29 @@ class ImageEmbeddingExtractor:
             print(f"Device: {self.device}")
             print(f"Embedding dimension: {self.embedding_dim}")
     
-    def load_and_preprocess_image(self, image_path: Union[str, Path]) -> torch.Tensor:
+    def load_image(self, image_path: Union[str, Path]) -> Image.Image:
         """
-        Load and preprocess a single image.
+        Load a single image from disk.
         
         Args:
             image_path: Path to the image file
             
         Returns:
-            Preprocessed image into a PyTorch tensor
+            PIL Image object in RGB format
         """
         img = Image.open(image_path).convert('RGB')
+        return img
+    
+    def preprocess_image(self, img: Image.Image) -> torch.Tensor:
+        """
+        Preprocess and normalize a PIL Image using Timm's transform pipeline.
+        
+        Args:
+            img: PIL Image object to preprocess
+            
+        Returns:
+            Preprocessed image as a PyTorch tensor with applied normalization
+        """
         img_tensor = self.transform(img)
         return img_tensor
     
@@ -77,7 +89,8 @@ class ImageEmbeddingExtractor:
                 batch_tensors = []
                 for img_path in batch_paths:
                     try:
-                        img_tensor = self.load_and_preprocess_image(img_path)
+                        img = self.load_image(img_path)
+                        img_tensor = self.preprocess_image(img)
                         batch_tensors.append(img_tensor)
                     except Exception as e:
                         if verbose:
@@ -104,16 +117,3 @@ class ImageEmbeddingExtractor:
             return torch.empty(0, self.embedding_dim)
 
 
-if __name__ == "__main__":
-    extractor = ImageEmbeddingExtractor(model_name='resnet18')  # 512-dim embeddings
-    
-    image_paths = [
-        './src_GAMMA/download.png',
-        './src_GAMMA/images.jpeg',
-        './src_GAMMA/x1080.jpeg',
-    ]
-    
-    embeddings = extractor.extract_embeddings(image_paths, batch_size=3)
-    
-    print(f"\nFinal embeddings shape: {embeddings.shape}")
-    print(f"Shape should be: ({len(image_paths)}, {extractor.embedding_dim})")
