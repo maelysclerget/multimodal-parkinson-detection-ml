@@ -7,19 +7,19 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, roc_curve, 
 
 class IntermediateFusionMLP(nn.Module):
     def __init__(self, 
-                 image_embed_dim: int = 512,
-                 audio_embed_dim: int = 768,
+                 feature_1_dim: int = 512,
+                 feature_2_dim: int = 768,
                  hidden_dims: list = [512, 256],
                  num_classes: int = 2,
                  dropout: float = 0.3,
                  verbose: bool = True):
         """
-        Early fusion model that concatenates image and audio embeddings,
+        Early fusion model that concatenates two feature embeddings,
         then passes through a CNN classifier.
         
         Args:
-            image_embed_dim: Dimension of image embeddings (default: 512)
-            audio_embed_dim: Dimension of audio embeddings (default: 768)
+            feature_1_dim: Dimension of first feature embeddings (default: 512)
+            feature_2_dim: Dimension of second feature embeddings (default: 768)
             hidden_dims: List of hidden layer dimensions (default: [512, 256])
             num_classes: Number of output classes (default: 10)
             dropout: Dropout probability (default: 0.3)
@@ -27,9 +27,9 @@ class IntermediateFusionMLP(nn.Module):
         """
         super().__init__()
         
-        self.image_embed_dim = image_embed_dim
-        self.audio_embed_dim = audio_embed_dim
-        self.fused_dim = image_embed_dim + audio_embed_dim
+        self.feature_1_dim = feature_1_dim
+        self.feature_2_dim = feature_2_dim
+        self.fused_dim = feature_1_dim + feature_2_dim
         
         # Reshape fused embeddings to 2D: (batch, 1, H, W)
         # Using square-ish dimensions for the feature map
@@ -88,19 +88,19 @@ class IntermediateFusionMLP(nn.Module):
             print(f"Output classes: {num_classes}")
             print(f"Device: {self.device}")
     
-    def forward(self, image_embed: torch.Tensor, audio_embed: torch.Tensor) -> torch.Tensor:
+    def forward(self, feature_1: torch.Tensor, feature_2: torch.Tensor) -> torch.Tensor:
         """
         Forward pass.
         
         Args:
-            image_embed: Image embeddings of shape (batch, image_embed_dim)
-            audio_embed: Audio embeddings of shape (batch, audio_embed_dim)
+            feature_1: First feature embeddings of shape (batch, feature_1_dim)
+            feature_2: Second feature embeddings of shape (batch, feature_2_dim)
             
         Returns:
             Logits of shape (batch, num_classes)
         """
         # Early fusion: concatenate embeddings
-        fused = torch.cat([image_embed, audio_embed], dim=1)
+        fused = torch.cat([feature_1, feature_2], dim=1)
         
         # Pad if necessary to match H*W
         if fused.size(1) < self.padded_dim:
@@ -119,25 +119,25 @@ class IntermediateFusionMLP(nn.Module):
         
         return forward_output
 
-    def predict(self, image_embed: torch.Tensor, audio_embed: torch.Tensor) -> torch.Tensor:
+    def predict(self, feature_1: torch.Tensor, feature_2: torch.Tensor) -> torch.Tensor:
         """Get class predictions."""
-        output = self.forward(image_embed, audio_embed)
+        output = self.forward(feature_1, feature_2)
         return torch.argmax(output, dim=1)
     
-    def predict_proba(self, image_embed: torch.Tensor, audio_embed: torch.Tensor) -> torch.Tensor:
+    def predict_proba(self, feature_1: torch.Tensor, feature_2: torch.Tensor) -> torch.Tensor:
         """Get class probabilities."""
-        output = self.forward(image_embed, audio_embed)
+        output = self.forward(feature_1, feature_2)
         return torch.softmax(output, dim=1)
     
-    def fit(self, train_image_embeds: torch.Tensor, train_audio_embeds: torch.Tensor,
+    def fit(self, train_feature_1: torch.Tensor, train_feature_2: torch.Tensor,
             train_labels: torch.Tensor, epochs: int = 50, batch_size: int = 32,
             lr: float = 1e-3, weight_decay: float = 0, verbose: bool = True):
         """
         Fit the model on training data.
         
         Args:
-            train_image_embeds: Training image embeddings (N, image_embed_dim)
-            train_audio_embeds: Training audio embeddings (N, audio_embed_dim)
+            train_feature_1: Training first feature embeddings (N, feature_1_dim)
+            train_feature_2: Training second feature embeddings (N, feature_2_dim)
             train_labels: Training labels (N,)
             epochs: Number of training epochs (default: 50)
             batch_size: Batch size (default: 32)
@@ -150,7 +150,7 @@ class IntermediateFusionMLP(nn.Module):
         self.train_acc_history = []
         
         # Create data loader
-        dataset = TensorDataset(train_image_embeds, train_audio_embeds, train_labels)
+        dataset = TensorDataset(train_feature_1, train_feature_2, train_labels)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         
         criterion = nn.CrossEntropyLoss()
@@ -162,11 +162,11 @@ class IntermediateFusionMLP(nn.Module):
             all_preds = []
             all_labels = []
             
-            for img, aud, lbl in loader:
-                img, aud, lbl = img.to(self.device), aud.to(self.device), lbl.to(self.device)
+            for feat_1, feat_2, lbl in loader:
+                feat_1, feat_2, lbl = feat_1.to(self.device), feat_2.to(self.device), lbl.to(self.device)
                 
                 optimizer.zero_grad()
-                logits = self.forward(img, aud)
+                logits = self.forward(feat_1, feat_2)
                 loss = criterion(logits, lbl)
                 loss.backward()
                 optimizer.step()
@@ -188,25 +188,26 @@ class IntermediateFusionMLP(nn.Module):
             print(f"Training complete. Final - Loss: {self.train_loss_history[-1]:.4f}, "
                   f"Acc: {self.train_acc_history[-1]:.4f}")
             
-    def test(self, test_image_embeds: torch.Tensor, test_audio_embeds: torch.Tensor,
+    def test(self, test_feature_1: torch.Tensor, test_feature_2: torch.Tensor,
             test_labels: torch.Tensor):
         """
         Evaluate the model on test data and return a dictionary of metrics.
         
         Args:
-            test_image_embeds: Image embeddings of shape (N, image_embed_dim)
-            test_audio_embeds: Audio embeddings of shape (N, audio_embed_dim)
+            test_feature_1: First feature embeddings of shape (N, feature_1_dim)
+            test_feature_2: Second feature embeddings of shape (N, feature_2_dim)
             test_labels: Ground truth labels of shape (N,)
         
         Returns:
             Dictionary containing test metrics (loss, accuracy, F1, confusion matrix, ROC AUC, ROC curve)
         """
         self.eval()
+        
         with torch.no_grad():
-            output = self.forward(test_image_embeds, test_audio_embeds)
+            output = self.forward(test_feature_1, test_feature_2)
             y_true  = test_labels.numpy()
-            y_pred  = self.predict(test_image_embeds, test_audio_embeds).numpy()
-            y_score = self.predict_proba(test_image_embeds, test_audio_embeds).numpy()
+            y_pred  = self.predict(test_feature_1, test_feature_2).numpy()
+            y_score = self.predict_proba(test_feature_1, test_feature_2).numpy()
 
         result_metrics = {
             "test_loss": nn.CrossEntropyLoss()(output, y_true).item(),
@@ -219,51 +220,3 @@ class IntermediateFusionMLP(nn.Module):
 
         return result_metrics
 
-
-if __name__ == "__main__":
-    # Initialize model
-    model = IntermediateFusionMLP(
-        image_embed_dim=512,
-        audio_embed_dim=768,
-        hidden_dims=[512, 256],
-        num_classes=10,
-        dropout=0.3
-    )
-    
-    # Example batch of embeddings
-    batch_size = 8
-    image_embeddings = torch.randn(batch_size, 512)
-    audio_embeddings = torch.randn(batch_size, 768)
-    
-    # Forward pass
-    logits = model(image_embeddings, audio_embeddings)
-    print(f"\nInput shapes: image={image_embeddings.shape}, audio={audio_embeddings.shape}")
-    print(f"Output logits shape: {logits.shape}")
-    
-    # Get predictions
-    predictions = model.predict(image_embeddings, audio_embeddings)
-    print(f"Predictions shape: {predictions.shape}")
-    
-    # Example training loop
-    print("\n--- Example Training Loop ---")
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model.to(device)
-    
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
-    
-    # Dummy data
-    image_embeddings = torch.randn(batch_size, 512).to(device)
-    audio_embeddings = torch.randn(batch_size, 768).to(device)
-    labels = torch.randint(0, 10, (batch_size,)).to(device)
-    
-    # Training step
-    model.train()
-    optimizer.zero_grad()
-    logits = model(image_embeddings, audio_embeddings)
-    loss = criterion(logits, labels)
-    loss.backward()
-    optimizer.step()
-    
-    print(f"Loss: {loss.item():.4f}")
