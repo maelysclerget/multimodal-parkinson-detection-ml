@@ -5,6 +5,30 @@ zip/
 *.zip
 
 # Testing images
+TestingData/
 download.png
 images.jpeg
 x1080.jpeg
+
+# Byte-compiled / cached files
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# VSCode settings (optional but common)
+.vscode/
+
+# macOS metadata (safe to ignore)
+.DS_Store
