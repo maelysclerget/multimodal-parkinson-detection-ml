@@ -142,7 +142,7 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
         optimizer.step()
         
         # Statistics
-        total_loss += loss.item()
+        total_loss += loss.detach().item()
         _, predicted = torch.max(outputs.data, 1)
         total += labels.size(0)
         correct += (predicted == labels).sum().item()
@@ -158,9 +158,9 @@ def evaluate(model, dataloader, criterion, device):
     Evaluate model on validation/test set
     
     Returns:
-        Average loss, accuracy, and AUC
+        Average loss, accuracy, AUC, and F1 score
     """
-    from sklearn.metrics import roc_auc_score
+    from sklearn.metrics import roc_auc_score, f1_score
     import numpy as np
     
     model.eval()
@@ -169,6 +169,7 @@ def evaluate(model, dataloader, criterion, device):
     total = 0
     all_labels = []
     all_probs = []
+    all_preds = []
     
     with torch.no_grad():
         for features, labels in dataloader:
@@ -186,15 +187,17 @@ def evaluate(model, dataloader, criterion, device):
             total += labels.size(0)
             correct += (predicted == labels).sum().item()
             
-            # Store for AUC calculation
+            # Store for AUC and F1 calculation
             all_labels.extend(labels.cpu().numpy())
             all_probs.extend(probs[:, 1].cpu().numpy())
+            all_preds.extend(predicted.cpu().numpy())
     
     avg_loss = total_loss / len(dataloader)
     accuracy = 100 * correct / total
     auc = roc_auc_score(all_labels, all_probs)
+    f1 = f1_score(all_labels, all_preds)
     
-    return avg_loss, accuracy, auc
+    return avg_loss, accuracy, auc, f1
 
 
 def train_model(
@@ -224,19 +227,21 @@ def train_model(
     model = model.to(device)
     
     # Loss and optimizer with class weights to handle imbalance
+    # Data: 77% PD (label=1), 23% Control (label=0)
+    # Weight minority class (Control) higher: [Control_weight, PD_weight] = [class_weight, 1.0]
     # Label smoothing (0.1) prevents overconfident predictions and improves calibration
     class_weights = torch.FloatTensor([class_weight, 1.0]).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-3)  # Increased regularization
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-2)  # Stronger regularization (0.01)
     
-    # Learning rate scheduler
+    # Learning rate scheduler - optimize for AUC (discriminative ability)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, mode='max', factor=0.5, patience=10
     )
     
     best_val_auc = 0.0
     patience_counter = 0
-    early_stop_patience = 20
+    early_stop_patience = 20  # Keep 20 since we have strong weight_decay (1e-2) and high dropout
     
     print("="*80)
     print("Starting Training")
@@ -247,22 +252,22 @@ def train_model(
         train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, device)
         
         # Validate
-        val_loss, val_acc, val_auc = evaluate(model, val_loader, criterion, device)
+        val_loss, val_acc, val_auc, val_f1 = evaluate(model, val_loader, criterion, device)
         
-        # Update learning rate
+        # Update learning rate based on AUC
         scheduler.step(val_auc)
         
         # Print progress
         print(f"Epoch [{epoch+1}/{num_epochs}]")
         print(f"  Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.2f}%")
-        print(f"  Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val AUC: {val_auc:.4f}")
+        print(f"  Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%, Val AUC: {val_auc:.4f}, Val F1: {val_f1:.4f}")
         
-        # Save best model based on AUC
+        # Save best model based on AUC (discriminative ability)
         if val_auc > best_val_auc:
             best_val_auc = val_auc
             patience_counter = 0
             torch.save(model.state_dict(), 'best_mlp_features_model.pth')
-            print(f"  ✓ Best model saved (Val AUC: {val_auc:.4f})")
+            print(f"  ✓ Best model saved (Val AUC: {val_auc:.4f}, Val F1: {val_f1:.4f})")
         else:
             patience_counter += 1
         
@@ -327,7 +332,7 @@ def aggregate_predictions_by_patient(predictions, probabilities, labels, healthc
         probabilities: Array of predicted probabilities (for class 1) for each recording
         labels: Array of true labels for each recording
         healthcodes: Array of healthCodes for each recording
-        method: 'majority' or 'average'
+        method: 'majority', 'average', 'weighted_average', or 'median'
     
     Returns:
         patient_preds, patient_labels, patient_healthcodes
@@ -348,13 +353,28 @@ def aggregate_predictions_by_patient(predictions, probabilities, labels, healthc
     patient_healthcodes = []
     
     for hc, data in patient_data.items():
+        probs = np.array(data['probs'])
+        
         if method == 'majority':
             # Majority vote of predictions
             pred = 1 if np.sum(data['preds']) > len(data['preds']) / 2 else 0
         elif method == 'average':
             # Average probability, threshold at 0.5
-            avg_prob = np.mean(data['probs'])
+            avg_prob = np.mean(probs)
             pred = 1 if avg_prob > 0.5 else 0
+        elif method == 'weighted_average':
+            # Weight by confidence: high-confidence predictions weighted more
+            # Confidence = |prob - 0.5| (distance from decision boundary)
+            confidence = np.abs(probs - 0.5)
+            if np.sum(confidence) > 0:
+                avg_prob = np.average(probs, weights=confidence)
+            else:
+                avg_prob = np.mean(probs)
+            pred = 1 if avg_prob > 0.5 else 0
+        elif method == 'median':
+            # Median probability (more robust to outliers)
+            median_prob = np.median(probs)
+            pred = 1 if median_prob > 0.5 else 0
         else:
             raise ValueError(f"Unknown aggregation method: {method}")
         
@@ -363,6 +383,25 @@ def aggregate_predictions_by_patient(predictions, probabilities, labels, healthc
         patient_healthcodes.append(hc)
     
     return np.array(patient_preds), np.array(patient_labels), patient_healthcodes
+
+
+def weighted_average_probs(patient_probs):
+    """
+    Helper function: Compute weighted average of probabilities
+    Weights by confidence (distance from 0.5 decision boundary)
+    
+    Args:
+        patient_probs: Array of probabilities for one patient's recordings
+    
+    Returns:
+        Weighted average probability
+    """
+    patient_probs = np.array(patient_probs)
+    confidence = np.abs(patient_probs - 0.5)
+    if np.sum(confidence) > 0:
+        return np.average(patient_probs, weights=confidence)
+    else:
+        return np.mean(patient_probs)
 
 
 def train_5fold_cv(
@@ -376,7 +415,8 @@ def train_5fold_cv(
     learning_rate=0.001,
     hidden_sizes=[256, 128, 64],
     dropout=0.5,
-    class_weight=3.0
+    class_weight=1.0,
+    undersample=True
 ):
     """
     Train MLP with 5-fold cross-validation
@@ -392,7 +432,8 @@ def train_5fold_cv(
         learning_rate: Learning rate
         hidden_sizes: List of hidden layer sizes
         dropout: Dropout probability
-        class_weight: Weight for class 0 (controls) to handle imbalance
+        class_weight: Weight for class 0 (controls) to handle imbalance (use 1.0 for balanced data)
+        undersample: Whether to undersample majority class in training set for balance
     """
     import os
     import json
@@ -484,9 +525,44 @@ def train_5fold_cv(
         val_data = features_df[features_df['healthCode'].isin(val_patient_ids)]
         test_data = features_df[features_df['healthCode'].isin(test_patient_ids)]
         
-        print(f"Train samples: {len(train_data)}")
+        print(f"Train samples (before undersampling): {len(train_data)}")
         print(f"Val samples: {len(val_data)}")
         print(f"Test samples: {len(test_data)}")
+        
+        # Undersample training data if requested
+        if undersample:
+            # Count recordings per class
+            class_0_count = (train_data['label_PD'] == 0).sum()
+            class_1_count = (train_data['label_PD'] == 1).sum()
+            
+            print(f"\nClass distribution before undersampling:")
+            print(f"  Class 0 (Control): {class_0_count} recordings")
+            print(f"  Class 1 (PD): {class_1_count} recordings")
+            
+            # Determine minority class count
+            min_count = min(class_0_count, class_1_count)
+            
+            # Get data for each class
+            class_0_data = train_data[train_data['label_PD'] == 0]
+            class_1_data = train_data[train_data['label_PD'] == 1]
+            
+            # Keep all minority class data, undersample majority class
+            if class_0_count < class_1_count:
+                # Class 0 is minority - keep all, undersample class 1
+                class_0_sampled = class_0_data
+                class_1_sampled = class_1_data.sample(n=min_count, random_state=42 + fold)
+            else:
+                # Class 1 is minority - keep all, undersample class 0
+                class_1_sampled = class_1_data
+                class_0_sampled = class_0_data.sample(n=min_count, random_state=42 + fold)
+            
+            # Combine and shuffle
+            train_data = pd.concat([class_0_sampled, class_1_sampled]).sample(frac=1, random_state=42 + fold).reset_index(drop=True)
+            
+            print(f"\nClass distribution after undersampling:")
+            print(f"  Class 0 (Control): {(train_data['label_PD'] == 0).sum()} recordings")
+            print(f"  Class 1 (PD): {(train_data['label_PD'] == 1).sum()} recordings")
+            print(f"  Total training samples: {len(train_data)}")
         
         # Extract features and labels
         X_train = train_data[feature_cols].values.astype(np.float32)
@@ -580,12 +656,31 @@ def train_5fold_cv(
         val_maj_accuracy = 100 * np.mean(val_pat_preds_maj == val_pat_labels_maj)
         val_maj_f1 = f1_score(val_pat_labels_maj, val_pat_preds_maj)
         val_maj_cm = confusion_matrix(val_pat_labels_maj, val_pat_preds_maj)
+        tn, fp, fn, tp = val_maj_cm.ravel()
+        val_maj_sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
+        val_maj_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        
+        # === Patient-level metrics (average probability, threshold=0.5) ===
+        val_pat_preds_avg, val_pat_labels_avg, _ = aggregate_predictions_by_patient(
+            val_preds, val_probs, val_labels, val_recording_healthcodes, method='average'
+        )
+        val_avg_accuracy = 100 * np.mean(val_pat_preds_avg == val_pat_labels_avg)
+        val_avg_f1 = f1_score(val_pat_labels_avg, val_pat_preds_avg)
+        val_avg_cm = confusion_matrix(val_pat_labels_avg, val_pat_preds_avg)
+        tn_avg, fp_avg, fn_avg, tp_avg = val_avg_cm.ravel()
+        val_avg_sensitivity = tp_avg / (tp_avg + fn_avg) if (tp_avg + fn_avg) > 0 else 0
+        val_avg_specificity = tn_avg / (tn_avg + fp_avg) if (tn_avg + fp_avg) > 0 else 0
         
         # === Patient-level metrics (average probability, with threshold tuning) ===
-        def tune_threshold(preds, probs, labels, healthcodes):
+        def tune_threshold(preds, probs, labels, healthcodes, aggregation_method='weighted_average'):
+            """
+            Tune threshold for patient-level aggregation using weighted average
+            Weights predictions by confidence (distance from 0.5)
+            """
             from collections import defaultdict
             from sklearn.metrics import f1_score, accuracy_score
             best_thr = 0.5
+            best_metric = 0.0  # Youden's J statistic
             best_f1 = 0.0
             best_acc = 0.0
             best_preds = None
@@ -603,8 +698,9 @@ def train_5fold_cv(
                 patient_preds = []
                 patient_labels = []
                 for hc, data in patient_data.items():
-                    avg_prob = np.mean(data['probs'])
-                    pred = 1 if avg_prob > thr else 0
+                    # Use weighted average aggregation
+                    agg_prob = weighted_average_probs(data['probs'])
+                    pred = 1 if agg_prob > thr else 0
                     patient_preds.append(pred)
                     patient_labels.append(data['label'])
                 acc = accuracy_score(patient_labels, patient_preds)
@@ -613,8 +709,12 @@ def train_5fold_cv(
                 tn, fp, fn, tp = cm.ravel()
                 sens = tp / (tp + fn) if (tp + fn) > 0 else 0
                 spec = tn / (tn + fp) if (tn + fp) > 0 else 0
-                # Choose best by F1, then accuracy
-                if f1 > best_f1 or (f1 == best_f1 and acc > best_acc):
+                # Youden's J statistic: maximizes sensitivity + specificity - 1
+                # This ensures balanced performance between both classes
+                youden_j = sens + spec - 1
+                # Choose best by Youden's J, use F1 as tiebreaker
+                if youden_j > best_metric or (youden_j == best_metric and f1 > best_f1):
+                    best_metric = youden_j
                     best_f1 = f1
                     best_acc = acc
                     best_thr = thr
@@ -636,30 +736,11 @@ def train_5fold_cv(
         patient_avg_probs_thr = []
         for hc in unique_healthcodes:
             indices = [i for i, h in enumerate(val_recording_healthcodes) if h == hc]
-            avg_prob = np.mean([val_probs[i] for i in indices])
+            patient_prob_list = [val_probs[i] for i in indices]
+            # Use weighted average for AUC computation
+            avg_prob = weighted_average_probs(patient_prob_list)
             patient_avg_probs_thr.append(avg_prob)
         val_thr_auc = roc_auc_score(val_pat_labels_thr, patient_avg_probs_thr)
-
-        # Calculate metrics for majority and average (0.5) for reference
-        val_pat_preds_maj, val_pat_labels_maj, _ = aggregate_predictions_by_patient(
-            val_preds, val_probs, val_labels, val_recording_healthcodes, method='majority'
-        )
-        val_maj_accuracy = 100 * np.mean(val_pat_preds_maj == val_pat_labels_maj)
-        val_maj_f1 = f1_score(val_pat_labels_maj, val_pat_preds_maj)
-        val_maj_cm = confusion_matrix(val_pat_labels_maj, val_pat_preds_maj)
-        tn, fp, fn, tp = val_maj_cm.ravel()
-        val_sensitivity = tp / (tp + fn) if (tp + fn) > 0 else 0
-        val_specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-
-        val_pat_preds_avg, val_pat_labels_avg, _ = aggregate_predictions_by_patient(
-            val_preds, val_probs, val_labels, val_recording_healthcodes, method='average'
-        )
-        val_avg_accuracy = 100 * np.mean(val_pat_preds_avg == val_pat_labels_avg)
-        val_avg_f1 = f1_score(val_pat_labels_avg, val_pat_preds_avg)
-        val_avg_cm = confusion_matrix(val_pat_labels_avg, val_pat_preds_avg)
-        tn_avg, fp_avg, fn_avg, tp_avg = val_avg_cm.ravel()
-        val_avg_sensitivity = tp_avg / (tp_avg + fn_avg) if (tp_avg + fn_avg) > 0 else 0
-        val_avg_specificity = tn_avg / (tn_avg + fp_avg) if (tn_avg + fp_avg) > 0 else 0
 
         # Store validation results
         val_fold_results = {
@@ -675,8 +756,8 @@ def train_5fold_cv(
             'patient_level_majority': {
                 'accuracy': val_maj_accuracy,
                 'f1_score': val_maj_f1,
-                'sensitivity': val_sensitivity,
-                'specificity': val_specificity,
+                'sensitivity': val_maj_sensitivity,
+                'specificity': val_maj_specificity,
                 'confusion_matrix': val_maj_cm.tolist()
             },
             'patient_level_average': {
@@ -704,7 +785,8 @@ def train_5fold_cv(
         print(f"                    Sensitivity: {val_rec_sensitivity:.4f}, Specificity: {val_rec_specificity:.4f}")
         print(f"  Patient-level (Majority) - Accuracy: {val_maj_accuracy:.2f}%, F1: {val_maj_f1:.4f}")
         print(f"  Patient-level (Average, thr=0.5) - Accuracy: {val_avg_accuracy:.2f}%, F1: {val_avg_f1:.4f}")
-        print(f"  Patient-level (Threshold tuned) - Accuracy: {100*val_thr_acc:.2f}%, F1: {val_thr_f1:.4f}, Threshold: {best_thr:.2f}")
+        print(f"  Patient-level (Weighted avg, thr={best_thr:.2f}) - Accuracy: {100*val_thr_acc:.2f}%, F1: {val_thr_f1:.4f}, AUC: {val_thr_auc:.4f}")
+        print(f"                                                   Sensitivity: {val_thr_sens:.4f}, Specificity: {val_thr_spec:.4f}")
         
         # ====================================================================
         # TEST SET EVALUATION (final performance)
@@ -751,6 +833,15 @@ def train_5fold_cv(
         test_maj_f1 = f1_score(test_pat_labels_maj, test_pat_preds_maj)
         test_maj_cm = confusion_matrix(test_pat_labels_maj, test_pat_preds_maj)
         
+        # Calculate sensitivity and specificity for majority voting
+        if test_maj_cm.shape == (2, 2):
+            tn_maj, fp_maj, fn_maj, tp_maj = test_maj_cm.ravel()
+            test_maj_sensitivity = tp_maj / (tp_maj + fn_maj) if (tp_maj + fn_maj) > 0 else 0
+            test_maj_specificity = tn_maj / (tn_maj + fp_maj) if (tn_maj + fp_maj) > 0 else 0
+        else:
+            test_maj_sensitivity = None
+            test_maj_specificity = None
+        
         # AUC at patient level (use average probability)
         patient_avg_probs = {}
         for i, hc in enumerate(test_recording_healthcodes):
@@ -761,7 +852,7 @@ def train_5fold_cv(
         pat_probs_for_auc = [np.mean(patient_avg_probs[hc]) for hc in test_pat_hc_maj]
         test_maj_auc = roc_auc_score(test_pat_labels_maj, pat_probs_for_auc)
         
-        # === Patient-level metrics (average probability, threshold tuned) ===
+        # === Patient-level metrics (using weighted average with tuned threshold) ===
         def aggregate_patient_threshold(probs, labels, healthcodes, thr):
             from collections import defaultdict
             patient_data = defaultdict(lambda: {'probs': [], 'label': None})
@@ -770,19 +861,23 @@ def train_5fold_cv(
                 patient_data[hc]['label'] = labels[i]
             patient_preds = []
             patient_labels = []
+            patient_probs = []
             for hc, data in patient_data.items():
-                avg_prob = np.mean(data['probs'])
-                pred = 1 if avg_prob > thr else 0
+                # Use weighted average aggregation
+                agg_prob = weighted_average_probs(data['probs'])
+                pred = 1 if agg_prob > thr else 0
                 patient_preds.append(pred)
                 patient_labels.append(data['label'])
-            return np.array(patient_preds), np.array(patient_labels)
+                patient_probs.append(agg_prob)
+            return np.array(patient_preds), np.array(patient_labels), np.array(patient_probs)
 
-        test_pat_preds_thr, test_pat_labels_thr = aggregate_patient_threshold(
+        test_pat_preds_thr, test_pat_labels_thr, test_pat_probs_thr = aggregate_patient_threshold(
             test_probs, test_labels, test_recording_healthcodes, best_thr
         )
-        from sklearn.metrics import f1_score, accuracy_score, confusion_matrix
+        from sklearn.metrics import f1_score, accuracy_score, confusion_matrix, roc_auc_score
         test_thr_accuracy = 100 * accuracy_score(test_pat_labels_thr, test_pat_preds_thr)
         test_thr_f1 = f1_score(test_pat_labels_thr, test_pat_preds_thr)
+        test_thr_auc = roc_auc_score(test_pat_labels_thr, test_pat_probs_thr)
         test_thr_cm = confusion_matrix(test_pat_labels_thr, test_pat_preds_thr)
         tn_thr, fp_thr, fn_thr, tp_thr = test_thr_cm.ravel()
         test_thr_sensitivity = tp_thr / (tp_thr + fn_thr) if (tp_thr + fn_thr) > 0 else 0
@@ -817,8 +912,8 @@ def train_5fold_cv(
                 'accuracy': test_maj_accuracy,
                 'auc': test_maj_auc,
                 'f1_score': test_maj_f1,
-                'sensitivity': None,  # Will be set below
-                'specificity': None,  # Will be set below
+                'sensitivity': test_maj_sensitivity,
+                'specificity': test_maj_specificity,
                 'confusion_matrix': test_maj_cm.tolist()
             },
             'patient_level_average': {
@@ -832,59 +927,33 @@ def train_5fold_cv(
             'patient_level_threshold_tuned': {
                 'threshold': best_thr,
                 'accuracy': test_thr_accuracy,
+                'auc': test_thr_auc,
                 'f1_score': test_thr_f1,
                 'sensitivity': test_thr_sensitivity,
                 'specificity': test_thr_specificity,
                 'confusion_matrix': test_thr_cm.tolist()
             }
         }
-        # Calculate sensitivity and specificity for patient_level_majority
-        if test_maj_cm.shape == (2, 2):
-            tn, fp, fn, tp = test_maj_cm.ravel()
-            test_fold_results['patient_level_majority']['sensitivity'] = tp / (tp + fn) if (tp + fn) > 0 else 0
-            test_fold_results['patient_level_majority']['specificity'] = tn / (tn + fp) if (tn + fp) > 0 else 0
-        else:
-            test_fold_results['patient_level_majority']['sensitivity'] = None
-            test_fold_results['patient_level_majority']['specificity'] = None
         all_test_results.append(test_fold_results)
 
         # Print test results
-        val_fold_results = {
-            'fold': fold + 1,
-            'recording_level': {
-                'accuracy': val_rec_accuracy,
-                'auc': val_rec_auc,
-                'f1_score': val_rec_f1,
-                'sensitivity': val_rec_sensitivity,
-                'specificity': val_rec_specificity,
-                'confusion_matrix': val_rec_cm.tolist()
-            },
-            'patient_level_majority': {
-                'accuracy': val_maj_accuracy,
-                'f1_score': val_maj_f1,
-                'sensitivity': val_sensitivity,
-                'specificity': val_specificity,
-                'confusion_matrix': val_maj_cm.tolist()
-            },
-            'patient_level_average': {
-                'accuracy': val_avg_accuracy,
-                'f1_score': val_avg_f1,
-                'sensitivity': val_avg_sensitivity,
-                'specificity': val_avg_specificity,
-                'confusion_matrix': val_avg_cm.tolist()
-            },
-            'patient_level_threshold_tuned': {
-                'threshold': best_thr,
-                'auc': val_thr_auc,
-                'accuracy': 100 * val_thr_acc,
-                'f1_score': val_thr_f1,
-                'sensitivity': val_thr_sens,
-                'specificity': val_thr_spec,
-                'confusion_matrix': val_thr_cm.tolist()
-            }
-        }
-        all_val_results.append(val_fold_results)
+        print(f"\nTest Results (Fold {fold + 1}):")
+        print(f"  Recording-level - Accuracy: {test_rec_accuracy:.2f}%, AUC: {test_rec_auc:.4f}, F1: {test_rec_f1:.4f}")
+        print(f"                    Sensitivity: {test_rec_sensitivity:.4f}, Specificity: {test_rec_specificity:.4f}")
+        print(f"  Patient-level (Majority) - Accuracy: {test_maj_accuracy:.2f}%, AUC: {test_maj_auc:.4f}, F1: {test_maj_f1:.4f}")
+        if test_maj_sensitivity is not None:
+            print(f"                             Sensitivity: {test_maj_sensitivity:.4f}, Specificity: {test_maj_specificity:.4f}")
+        print(f"  Patient-level (Weighted avg, thr={best_thr:.2f}) - Accuracy: {test_thr_accuracy:.2f}%, AUC: {test_thr_auc:.4f}, F1: {test_thr_f1:.4f}")
+        print(f"                                                   Sensitivity: {test_thr_sensitivity:.4f}, Specificity: {test_thr_specificity:.4f}")
+        print()
 
+    # ====================================================================
+    # SUMMARY ACROSS ALL FOLDS
+    # ====================================================================
+    print("="*80)
+    print("SUMMARY ACROSS ALL 5 FOLDS")
+    print("="*80)
+    
     def safe_mean_std(key, subkey):
         vals = [r[key][subkey] for r in all_test_results if subkey in r[key] and r[key][subkey] is not None]
         if len(vals) > 0:
@@ -910,6 +979,12 @@ def train_5fold_cv(
     avg_test_rec_sensitivity, std_test_rec_sensitivity = safe_mean_std('recording_level', 'sensitivity')
     avg_test_rec_specificity, std_test_rec_specificity = safe_mean_std('recording_level', 'specificity')
     
+    avg_test_thr_accuracy, std_test_thr_accuracy = safe_mean_std('patient_level_threshold_tuned', 'accuracy')
+    avg_test_thr_auc, std_test_thr_auc = safe_mean_std('patient_level_threshold_tuned', 'auc')
+    avg_test_thr_f1, std_test_thr_f1 = safe_mean_std('patient_level_threshold_tuned', 'f1_score')
+    avg_test_thr_sensitivity, std_test_thr_sensitivity = safe_mean_std('patient_level_threshold_tuned', 'sensitivity')
+    avg_test_thr_specificity, std_test_thr_specificity = safe_mean_std('patient_level_threshold_tuned', 'specificity')
+    
     # Summary results
     summary = {
         'test_patient_majority': {
@@ -923,6 +998,18 @@ def train_5fold_cv(
             'std_sensitivity': std_test_maj_sensitivity,
             'avg_specificity': avg_test_maj_specificity,
             'std_specificity': std_test_maj_specificity
+        },
+        'test_patient_threshold_tuned': {
+            'avg_accuracy': avg_test_thr_accuracy,
+            'std_accuracy': std_test_thr_accuracy,
+            'avg_auc': avg_test_thr_auc,
+            'std_auc': std_test_thr_auc,
+            'avg_f1': avg_test_thr_f1,
+            'std_f1': std_test_thr_f1,
+            'avg_sensitivity': avg_test_thr_sensitivity,
+            'std_sensitivity': std_test_thr_sensitivity,
+            'avg_specificity': avg_test_thr_specificity,
+            'std_specificity': std_test_thr_specificity
         },
         'test_patient_average': {
             'avg_accuracy': avg_test_avg_accuracy,
@@ -951,18 +1038,27 @@ def train_5fold_cv(
         'test_fold_results': all_test_results,
         'val_fold_results': all_val_results
     }
-    print(f"Average F1 Score: {avg_test_avg_f1:.4f} ± {std_test_avg_f1:.4f}")
-    print(f"Average Sensitivity: {avg_test_avg_sensitivity:.4f} ± {std_test_avg_sensitivity:.4f}")
-    print(f"Average Specificity: {avg_test_avg_specificity:.4f} ± {std_test_avg_specificity:.4f}")
+    
+    print("\n--- TEST SET: Patient-level (Threshold-Tuned) [PRIMARY METRIC] ---")
+    print(f"Average Accuracy: {avg_test_thr_accuracy:.2f}% ± {std_test_thr_accuracy:.2f}%")
+    print(f"Average AUC: {avg_test_thr_auc:.4f} ± {std_test_thr_auc:.4f}")
+    print(f"Average F1 Score: {avg_test_thr_f1:.4f} ± {std_test_thr_f1:.4f}")
+    print(f"Average Sensitivity: {avg_test_thr_sensitivity:.4f} ± {std_test_thr_sensitivity:.4f}")
+    print(f"Average Specificity: {avg_test_thr_specificity:.4f} ± {std_test_thr_specificity:.4f}")
+    
+    print("\n--- TEST SET: Patient-level (Majority Voting) ---")
+    print(f"Average Accuracy: {avg_test_maj_accuracy:.2f}% ± {std_test_maj_accuracy:.2f}%")
+    print(f"Average AUC: {avg_test_maj_auc:.4f} ± {std_test_maj_auc:.4f}")
+    print(f"Average F1 Score: {avg_test_maj_f1:.4f} ± {std_test_maj_f1:.4f}")
+    print(f"Average Sensitivity: {avg_test_maj_sensitivity:.4f} ± {std_test_maj_sensitivity:.4f}")
+    print(f"Average Specificity: {avg_test_maj_specificity:.4f} ± {std_test_maj_specificity:.4f}")
     
     print("\n--- TEST SET: Recording-level (for reference) ---")
     print(f"Average Accuracy: {avg_test_rec_accuracy:.2f}% ± {std_test_rec_accuracy:.2f}%")
     print(f"Average AUC: {avg_test_rec_auc:.4f} ± {std_test_rec_auc:.4f}")
     print(f"Average F1 Score: {avg_test_rec_f1:.4f} ± {std_test_rec_f1:.4f}")
-    print(f"Average Sensitivity: {avg_test_rec_sensitivity:.4f} ± {std_test_rec_sensitivity:.4f}")
+    print(f"Average Sensitivity: {avg_test_rec_sensitivity:.4f} ± {std_test_rec_specificity:.4f}")
     print(f"Average Specificity: {avg_test_rec_specificity:.4f} ± {std_test_rec_specificity:.4f}")
-    print(f"Average AUC: {avg_test_rec_auc:.4f} ± {std_test_rec_auc:.4f}")
-    print(f"Average F1 Score: {avg_test_rec_f1:.4f} ± {std_test_rec_f1:.4f}")
     
     print(f"\nResults saved to output directory: {output_dir}")
     print("="*80)
@@ -972,26 +1068,29 @@ def train_5fold_cv(
 
 if __name__ == "__main__":
     """
-    Run MLP with 5-fold cross-validation - Version 1
+    Run MLP with 5-fold cross-validation - Version 6 (With Class Weights)
     Uses validation set for model selection and test set for final evaluation
+    Uses class weights to handle imbalance (NO undersampling)
     """
     
     # Configuration
-    FEATURES_CSV = "/mloscratch/users/gnahas/data/features/acoustic_features.csv"
+    FEATURES_CSV = "/mloscratch/users/gnahas/data/features/acoustic_features_vf.csv"
     LABELS_CSV = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
     TRAIN_FOLDS_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
     VAL_TEST_FOLDS_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
-    OUTPUT_DIR = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/MLP"
+    OUTPUT_DIR = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/MLP_V6_class_weights"
     
-    # Hyperparameters
+    # Hyperparameters - V6 with class weights
     BATCH_SIZE = 64
     NUM_EPOCHS = 100
     LEARNING_RATE = 0.001
     HIDDEN_SIZES = [256, 128, 64]
-    DROPOUT = 0.5
+    DROPOUT = 0.7
+    CLASS_WEIGHT = 3.5  # Weight Control class ~3.5x higher (data is ~77% PD / 23% Control)
+    UNDERSAMPLE = False  # NO undersampling - use class weights instead
     
     print("="*80)
-    print("MLP Training - Version 1 (Baseline)")
+    print("MLP Training - Version 6 (With Class Weights, NO Undersampling)")
     print("="*80)
     print("\nConfiguration:")
     print(f"  Features: {FEATURES_CSV}")
@@ -1005,6 +1104,8 @@ if __name__ == "__main__":
     print(f"  Learning rate: {LEARNING_RATE}")
     print(f"  Hidden sizes: {HIDDEN_SIZES}")
     print(f"  Dropout: {DROPOUT}")
+    print(f"  Class weight: {CLASS_WEIGHT}")
+    print(f"  Undersample: {UNDERSAMPLE}")
     print("="*80 + "\n")
     
     # Run 5-fold cross-validation
@@ -1018,5 +1119,7 @@ if __name__ == "__main__":
         num_epochs=NUM_EPOCHS,
         learning_rate=LEARNING_RATE,
         hidden_sizes=HIDDEN_SIZES,
-        dropout=DROPOUT
+        dropout=DROPOUT,
+        class_weight=CLASS_WEIGHT,
+        undersample=UNDERSAMPLE
     )

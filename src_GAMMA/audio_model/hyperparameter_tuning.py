@@ -8,24 +8,27 @@ import json
 import itertools
 from mlp_features_model import train_5fold_cv
 
-# Hyperparameter search space
+# Hyperparameter search space - V6 with class weights (NO undersampling)
+# Data is ~77% PD / 23% Control at recording level
+# Using class weights to handle imbalance while keeping natural distribution
 HYPERPARAMETER_GRID = {
-    'learning_rate': [0.0001, 0.0005, 0.001],  # Lower learning rates
+    'learning_rate': [0.001],  # Best from previous results
     'hidden_sizes': [
-        [128, 64, 32],       # Small (best F1 before)
-        [256, 128, 64],      # Medium
+        [128, 64],             # 2 hidden layers (simpler, less overfitting)
+        [256, 128, 64],        # 3 hidden layers (Best from V7)
     ],
-    'dropout': [0.5, 0.7],  # High dropout only
+    'dropout': [0.7, 0.8, 0.9],  # Higher dropout to combat overfitting
     'batch_size': [64],  # Fixed batch size
-    'class_weight': [1.75, 2.5],  # Moderate to strong (1.32 was too weak, 4.0 might be extreme)
+    'class_weight': [3, 3.5],  # Best from V7 (optimal for 77/23 imbalance)
+    'undersample': [False],  # NO undersampling - use class weights instead
 }
 
 # Fixed parameters
-FEATURES_CSV = "/mloscratch/users/gnahas/data/features/Preprocessed/acoustic_features_vf_clean.csv"
+FEATURES_CSV = "/mloscratch/users/gnahas/data/features/acoustic_features_vf.csv"
 LABELS_CSV = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
 TRAIN_FOLDS_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
 VAL_TEST_FOLDS_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
-BASE_OUTPUT_DIR = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/MLP_Tuning/V4"
+BASE_OUTPUT_DIR = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/MLP_Tuning/V9_wo_preprocessing"
 NUM_EPOCHS = 100
 
 
@@ -64,7 +67,7 @@ def run_hyperparameter_search():
         print("="*80 + "\n")
         
         # Create config name (no subfolder, just for identification)
-        config_name = f"lr{params['learning_rate']}_hs{'-'.join(map(str, params['hidden_sizes']))}_drop{params['dropout']}_bs{params['batch_size']}_cw{params['class_weight']}"
+        config_name = f"lr{params['learning_rate']}_hs{'-'.join(map(str, params['hidden_sizes']))}_drop{params['dropout']}_bs{params['batch_size']}_cw{params['class_weight']}_us{params['undersample']}"
         
         # Use a temporary directory that we'll delete after extracting results
         import tempfile
@@ -83,7 +86,8 @@ def run_hyperparameter_search():
                 learning_rate=params['learning_rate'],
                 hidden_sizes=params['hidden_sizes'],
                 dropout=params['dropout'],
-                class_weight=params['class_weight']
+                class_weight=params['class_weight'],
+                undersample=params['undersample']
             )
             
             # Store results with hyperparameters
@@ -91,6 +95,7 @@ def run_hyperparameter_search():
                 'config_id': idx + 1,
                 'config_name': config_name,
                 'hyperparameters': params,
+                'test_patient_threshold_tuned': summary['test_patient_threshold_tuned'],
                 'test_patient_majority': summary['test_patient_majority'],
                 'test_patient_average': summary['test_patient_average'],
                 'test_recording_level': summary['test_recording_level'],
@@ -98,13 +103,16 @@ def run_hyperparameter_search():
             all_results.append(result)
             
             print(f"\n✓ Configuration {idx+1} completed successfully")
-            print(f"  Patient (Majority) - Acc: {summary['test_patient_majority']['avg_accuracy']:.2f}%, "
+            print(f"  Patient (Threshold-Tuned) - Acc: {summary['test_patient_threshold_tuned']['avg_accuracy']:.2f}%, "
+                  f"AUC: {summary['test_patient_threshold_tuned']['avg_auc']:.4f}, "
+                  f"F1: {summary['test_patient_threshold_tuned']['avg_f1']:.4f}, "
+                  f"Sens: {summary['test_patient_threshold_tuned']['avg_sensitivity']:.3f}, "
+                  f"Spec: {summary['test_patient_threshold_tuned']['avg_specificity']:.3f}")
+            print(f"  Patient (Majority)        - Acc: {summary['test_patient_majority']['avg_accuracy']:.2f}%, "
                   f"AUC: {summary['test_patient_majority']['avg_auc']:.4f}, "
                   f"Sens: {summary['test_patient_majority']['avg_sensitivity']:.3f}, "
                   f"Spec: {summary['test_patient_majority']['avg_specificity']:.3f}")
-            print(f"  Patient (Average)  - Acc: {summary['test_patient_average']['avg_accuracy']:.2f}%, "
-                  f"AUC: {summary['test_patient_average']['avg_auc']:.4f}")
-            print(f"  Recording-level    - Acc: {summary['test_recording_level']['avg_accuracy']:.2f}%, "
+            print(f"  Recording-level           - Acc: {summary['test_recording_level']['avg_accuracy']:.2f}%, "
                   f"AUC: {summary['test_recording_level']['avg_auc']:.4f}, "
                   f"Sens: {summary['test_recording_level']['avg_sensitivity']:.3f}, "
                   f"Spec: {summary['test_recording_level']['avg_specificity']:.3f}")
@@ -141,6 +149,31 @@ def run_hyperparameter_search():
     successful_results = [r for r in all_results if 'error' not in r]
     
     if successful_results:
+        # Print summary table of ALL configurations
+        print("\n" + "="*80)
+        print("SUMMARY TABLE - ALL CONFIGURATIONS")
+        print("="*80)
+        print(f"\n{'ID':<4} {'Config Name':<45} {'AUC':<7} {'Sens':<7} {'Spec':<7} {'F1':<7}")
+        print("-" * 80)
+        for r in successful_results:
+            config_id = r['config_id']
+            config_name = r['config_name'][:45]  # Truncate if too long
+            auc = r['test_patient_threshold_tuned']['avg_auc']
+            sens = r['test_patient_threshold_tuned']['avg_sensitivity']
+            spec = r['test_patient_threshold_tuned']['avg_specificity']
+            f1 = r['test_patient_threshold_tuned']['avg_f1']
+            print(f"{config_id:<4} {config_name:<45} {auc:<7.4f} {sens:<7.3f} {spec:<7.3f} {f1:<7.4f}")
+        print("="*80)
+        
+
+        # Best by patient-level threshold-tuned (PRIMARY)
+        best_thr_accuracy = max(successful_results, 
+                               key=lambda x: x['test_patient_threshold_tuned']['avg_accuracy'])
+        best_thr_auc = max(successful_results, 
+                         key=lambda x: x['test_patient_threshold_tuned']['avg_auc'])
+        best_thr_f1 = max(successful_results, 
+                        key=lambda x: x['test_patient_threshold_tuned']['avg_f1'])
+        
         # Best by patient-level majority voting
         best_maj_accuracy = max(successful_results, 
                                key=lambda x: x['test_patient_majority']['avg_accuracy'])
@@ -171,6 +204,52 @@ def run_hyperparameter_search():
         print(f"Total configurations tested: {len(combinations)}")
         print(f"Successful: {len(successful_results)}")
         print(f"Failed: {len(all_results) - len(successful_results)}")
+        
+        print("\n" + "="*80)
+        print("BEST CONFIGURATIONS - PATIENT-LEVEL (THRESHOLD-TUNED) [PRIMARY]")
+        print("="*80)
+        
+        print("\n--- Best by Accuracy ---")
+        print(f"Config: {best_thr_accuracy['config_name']}")
+        print(f"Hyperparameters: {best_thr_accuracy['hyperparameters']}")
+        print(f"Accuracy: {best_thr_accuracy['test_patient_threshold_tuned']['avg_accuracy']:.2f}% "
+              f"± {best_thr_accuracy['test_patient_threshold_tuned']['std_accuracy']:.2f}%")
+        print(f"AUC: {best_thr_accuracy['test_patient_threshold_tuned']['avg_auc']:.4f} "
+              f"± {best_thr_accuracy['test_patient_threshold_tuned']['std_auc']:.4f}")
+        print(f"F1: {best_thr_accuracy['test_patient_threshold_tuned']['avg_f1']:.4f} "
+              f"± {best_thr_accuracy['test_patient_threshold_tuned']['std_f1']:.4f}")
+        print(f"Sensitivity: {best_thr_accuracy['test_patient_threshold_tuned']['avg_sensitivity']:.4f} "
+              f"± {best_thr_accuracy['test_patient_threshold_tuned']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_thr_accuracy['test_patient_threshold_tuned']['avg_specificity']:.4f} "
+              f"± {best_thr_accuracy['test_patient_threshold_tuned']['std_specificity']:.4f}")
+        
+        print("\n--- Best by AUC ---")
+        print(f"Config: {best_thr_auc['config_name']}")
+        print(f"Hyperparameters: {best_thr_auc['hyperparameters']}")
+        print(f"AUC: {best_thr_auc['test_patient_threshold_tuned']['avg_auc']:.4f} "
+              f"± {best_thr_auc['test_patient_threshold_tuned']['std_auc']:.4f}")
+        print(f"Accuracy: {best_thr_auc['test_patient_threshold_tuned']['avg_accuracy']:.2f}% "
+              f"± {best_thr_auc['test_patient_threshold_tuned']['std_accuracy']:.2f}%")
+        print(f"F1: {best_thr_auc['test_patient_threshold_tuned']['avg_f1']:.4f} "
+              f"± {best_thr_auc['test_patient_threshold_tuned']['std_f1']:.4f}")
+        print(f"Sensitivity: {best_thr_auc['test_patient_threshold_tuned']['avg_sensitivity']:.4f} "
+              f"± {best_thr_auc['test_patient_threshold_tuned']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_thr_auc['test_patient_threshold_tuned']['avg_specificity']:.4f} "
+              f"± {best_thr_auc['test_patient_threshold_tuned']['std_specificity']:.4f}")
+        
+        print("\n--- Best by F1 Score ---")
+        print(f"Config: {best_thr_f1['config_name']}")
+        print(f"Hyperparameters: {best_thr_f1['hyperparameters']}")
+        print(f"F1: {best_thr_f1['test_patient_threshold_tuned']['avg_f1']:.4f} "
+              f"± {best_thr_f1['test_patient_threshold_tuned']['std_f1']:.4f}")
+        print(f"Accuracy: {best_thr_f1['test_patient_threshold_tuned']['avg_accuracy']:.2f}% "
+              f"± {best_thr_f1['test_patient_threshold_tuned']['std_accuracy']:.2f}%")
+        print(f"AUC: {best_thr_f1['test_patient_threshold_tuned']['avg_auc']:.4f} "
+              f"± {best_thr_f1['test_patient_threshold_tuned']['std_auc']:.4f}")
+        print(f"Sensitivity: {best_thr_f1['test_patient_threshold_tuned']['avg_sensitivity']:.4f} "
+              f"± {best_thr_f1['test_patient_threshold_tuned']['std_sensitivity']:.4f}")
+        print(f"Specificity: {best_thr_f1['test_patient_threshold_tuned']['avg_specificity']:.4f} "
+              f"± {best_thr_f1['test_patient_threshold_tuned']['std_specificity']:.4f}")
         
         print("\n" + "="*80)
         print("BEST CONFIGURATIONS - PATIENT-LEVEL (MAJORITY VOTING)")
@@ -315,15 +394,15 @@ def run_hyperparameter_search():
         
         # Save best configurations summary
         best_configs = {
+            'patient_threshold_tuned': {
+                'best_by_accuracy': best_thr_accuracy,
+                'best_by_auc': best_thr_auc,
+                'best_by_f1': best_thr_f1
+            },
             'patient_majority_voting': {
                 'best_by_accuracy': best_maj_accuracy,
                 'best_by_auc': best_maj_auc,
                 'best_by_f1': best_maj_f1
-            },
-            'patient_average_probability': {
-                'best_by_accuracy': best_avg_accuracy,
-                'best_by_auc': best_avg_auc,
-                'best_by_f1': best_avg_f1
             },
             'recording_level': {
                 'best_by_accuracy': best_rec_accuracy,
@@ -340,26 +419,29 @@ def run_hyperparameter_search():
         print("QUICK DIAGNOSTIC SUMMARY - AVERAGE METRICS ACROSS ALL CONFIGURATIONS")
         print("="*80)
         
-        avg_sensitivity = sum(r['test_patient_majority']['avg_sensitivity'] for r in successful_results) / len(successful_results)
-        avg_specificity = sum(r['test_patient_majority']['avg_specificity'] for r in successful_results) / len(successful_results)
-        avg_auc = sum(r['test_patient_majority']['avg_auc'] for r in successful_results) / len(successful_results)
-        avg_accuracy = sum(r['test_patient_majority']['avg_accuracy'] for r in successful_results) / len(successful_results)
+        avg_sensitivity_thr = sum(r['test_patient_threshold_tuned']['avg_sensitivity'] for r in successful_results) / len(successful_results)
+        avg_specificity_thr = sum(r['test_patient_threshold_tuned']['avg_specificity'] for r in successful_results) / len(successful_results)
+        avg_auc_thr = sum(r['test_patient_threshold_tuned']['avg_auc'] for r in successful_results) / len(successful_results)
+        avg_accuracy_thr = sum(r['test_patient_threshold_tuned']['avg_accuracy'] for r in successful_results) / len(successful_results)
+        avg_f1_thr = sum(r['test_patient_threshold_tuned']['avg_f1'] for r in successful_results) / len(successful_results)
         
-        print(f"\nPatient-Level (Majority Voting) - Averaged across {len(successful_results)} configs:")
-        print(f"  Average Sensitivity: {avg_sensitivity:.3f} ({avg_sensitivity*100:.1f}%)")
-        print(f"  Average Specificity: {avg_specificity:.3f} ({avg_specificity*100:.1f}%)")
-        print(f"  Average AUC:         {avg_auc:.4f}")
-        print(f"  Average Accuracy:    {avg_accuracy:.2f}%")
+        print(f"\nPatient-Level (Threshold-Tuned) - Averaged across {len(successful_results)} configs:")
+        print(f"  Average Sensitivity: {avg_sensitivity_thr:.3f} ({avg_sensitivity_thr*100:.1f}%)")
+        print(f"  Average Specificity: {avg_specificity_thr:.3f} ({avg_specificity_thr*100:.1f}%)")
+        print(f"  Average AUC:         {avg_auc_thr:.4f}")
+        print(f"  Average F1:          {avg_f1_thr:.4f}")
+        print(f"  Average Accuracy:    {avg_accuracy_thr:.2f}%")
         
         # Breakdown by class weight
         print(f"\nBreakdown by Class Weight:")
         class_weights = sorted(set(r['hyperparameters']['class_weight'] for r in successful_results))
         for cw in class_weights:
             cw_results = [r for r in successful_results if r['hyperparameters']['class_weight'] == cw]
-            cw_sens = sum(r['test_patient_majority']['avg_sensitivity'] for r in cw_results) / len(cw_results)
-            cw_spec = sum(r['test_patient_majority']['avg_specificity'] for r in cw_results) / len(cw_results)
-            cw_auc = sum(r['test_patient_majority']['avg_auc'] for r in cw_results) / len(cw_results)
-            print(f"  Class Weight {cw}: Sens={cw_sens:.3f}, Spec={cw_spec:.3f}, AUC={cw_auc:.4f}")
+            cw_sens = sum(r['test_patient_threshold_tuned']['avg_sensitivity'] for r in cw_results) / len(cw_results)
+            cw_spec = sum(r['test_patient_threshold_tuned']['avg_specificity'] for r in cw_results) / len(cw_results)
+            cw_auc = sum(r['test_patient_threshold_tuned']['avg_auc'] for r in cw_results) / len(cw_results)
+            cw_f1 = sum(r['test_patient_threshold_tuned']['avg_f1'] for r in cw_results) / len(cw_results)
+            print(f"  Class Weight {cw}: Sens={cw_sens:.3f}, Spec={cw_spec:.3f}, AUC={cw_auc:.4f}, F1={cw_f1:.4f}")
         
         print("="*80)
         
