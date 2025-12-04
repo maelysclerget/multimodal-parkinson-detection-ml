@@ -25,6 +25,7 @@ def cross_validation_5fold_intermediate_fusion(
     learning_rate=0.001,
     weight_decay=0.0,
     dropout=0.5,
+    pooling_type="max",
     class_weight=1.0,
     verbose=True
 ):
@@ -44,6 +45,7 @@ def cross_validation_5fold_intermediate_fusion(
         learning_rate: Learning rate for optimizer (default: 0.001)
         weight_decay: L2 regularization weight decay (default: 0.0)
         dropout: Dropout rate (default: 0.5)
+        pooling_type: Pooling type for CNN - 'max', 'avg', or 'adaptive_avg' (default: 'max')
         class_weight: Weight for positive class in loss function (default: 1.0)
         verbose: Whether to print training progress (default: True)
         
@@ -135,7 +137,8 @@ def cross_validation_5fold_intermediate_fusion(
             model = IntermediateFusionCNN(
                 input_size=input_size,
                 hidden_dims=hidden_dims,
-                dropout=dropout
+                dropout=dropout,
+                pooling_type=pooling_type
             )
         else:
             raise ValueError(f"Unknown NN_type: {NN_type}. Must be 'MLP' or 'CNN'")
