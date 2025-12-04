@@ -12,7 +12,7 @@ from IntermediateFusionCNN import IntermediateFusionCNN
 from IntermediateFusionMLP import IntermediateFusionMLP
 
 
-def cross_validation_5fold(
+def cross_validation_5fold_intermediate_fusion(
     features_csv,
     labels_csv,
     train_folds_csv,
@@ -48,7 +48,16 @@ def cross_validation_5fold(
         verbose: Whether to print training progress (default: True)
         
     Returns:
-        str: Path to the best model saved as .pth file
+        tuple: (best_model_path, metrics_history) where:
+            - best_model_path (str): Path to the best model saved as .pth file
+            - metrics_history (dict): Dictionary with metrics from all folds, containing:
+                - 'folds': List of fold numbers (0-4)
+                - 'test_loss': List of test losses per fold
+                - 'test_acc': List of test accuracies per fold
+                - 'test_f1': List of test F1 scores per fold
+                - 'test_roc_auc': List of test ROC AUC scores per fold
+                - 'test_conf_mat': List of confusion matrices per fold
+                - 'test_roc_curve': List of ROC curves per fold
     """
     # Create output directory
     Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -81,6 +90,17 @@ def cross_validation_5fold(
     fold_results = []
     best_model_path = None
     best_fold_score = -np.inf
+    
+    # Initialize metrics history
+    metrics_history = {
+        'folds': [],
+        'test_loss': [],
+        'test_acc': [],
+        'test_f1': [],
+        'test_roc_auc': [],
+        'test_conf_mat': [],
+        'test_roc_curve': []
+    }
     
     # Perform 5-fold CV
     for fold in range(5):
@@ -140,6 +160,15 @@ def cross_validation_5fold(
         
         test_metrics = model.test(X_test, y_test, batch_size=batch_size)
         
+        # Store metrics in history
+        metrics_history['folds'].append(fold)
+        metrics_history['test_loss'].append(test_metrics['test_loss'])
+        metrics_history['test_acc'].append(test_metrics['test_acc'])
+        metrics_history['test_f1'].append(test_metrics['test_f1'])
+        metrics_history['test_roc_auc'].append(test_metrics['test_roc_auc'])
+        metrics_history['test_conf_mat'].append(test_metrics['test_conf_mat'])
+        metrics_history['test_roc_curve'].append(test_metrics['test_roc_curve'])
+        
         if verbose:
             print(f"Fold {fold + 1} Test Results:")
             for metric_name, metric_value in test_metrics.items():
@@ -167,7 +196,7 @@ def cross_validation_5fold(
     if verbose:
         _print_cv_summary(fold_results)
     
-    return best_model_path
+    return best_model_path, metrics_history
 
 
 def _print_cv_summary(fold_results):
