@@ -10,7 +10,6 @@ class IntermediateFusionMLP(nn.Module):
                  feature_1_dim: int = 512,
                  feature_2_dim: int = 768,
                  hidden_dims: list = [512, 256],
-                 num_classes: int = 2,
                  dropout: float = 0.3,
                  verbose: bool = True):
         """
@@ -21,7 +20,6 @@ class IntermediateFusionMLP(nn.Module):
             feature_1_dim: Dimension of first feature embeddings (default: 512)
             feature_2_dim: Dimension of second feature embeddings (default: 768)
             hidden_dims: List of hidden layer dimensions (default: [512, 256])
-            num_classes: Number of output classes (default: 10)
             dropout: Dropout probability (default: 0.3)
             verbose: Whether the constructor should output verbal execution tracing (default: True)
         """
@@ -60,8 +58,8 @@ class IntermediateFusionMLP(nn.Module):
         
         self.cnn = nn.Sequential(*layers)
         
-        # Output layer
-        self.fc = nn.Linear(self.flattened_size, num_classes)
+        # Output layer (single node for binary classification)
+        self.fc = nn.Linear(self.flattened_size, 1)
 
         # Training history (populated by fit)
         self.train_loss_history = []
@@ -85,7 +83,7 @@ class IntermediateFusionMLP(nn.Module):
             print(f"Reshaped to: (1, {self.H}, {self.W}) [padded_dim={self.padded_dim}]")
             print(f"CNN architecture: {len(hidden_dims)} conv layers with channels {hidden_dims}")
             print(f"Flattened size before FC: {self.flattened_size}")
-            print(f"Output classes: {num_classes}")
+            print(f"Output: 1 (binary classification)")
             print(f"Device: {self.device}")
     
     def forward(self, feature_1: torch.Tensor, feature_2: torch.Tensor) -> torch.Tensor:
@@ -120,14 +118,15 @@ class IntermediateFusionMLP(nn.Module):
         return forward_output
 
     def predict(self, feature_1: torch.Tensor, feature_2: torch.Tensor) -> torch.Tensor:
-        """Get class predictions."""
+        """Get class predictions (0 or 1)."""
         output = self.forward(feature_1, feature_2)
-        return torch.argmax(output, dim=1)
+        return (output > 0).squeeze().long()
     
     def predict_proba(self, feature_1: torch.Tensor, feature_2: torch.Tensor) -> torch.Tensor:
         """Get class probabilities."""
         output = self.forward(feature_1, feature_2)
-        return torch.softmax(output, dim=1)
+        probs = torch.sigmoid(output)
+        return torch.cat([1 - probs, probs], dim=1)
     
     def fit(self, train_feature_1: torch.Tensor, train_feature_2: torch.Tensor,
             train_labels: torch.Tensor, epochs: int = 50, batch_size: int = 32,
@@ -153,7 +152,7 @@ class IntermediateFusionMLP(nn.Module):
         dataset = TensorDataset(train_feature_1, train_feature_2, train_labels)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.BCEWithLogitsLoss()
         optimizer = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
         
         for epoch in range(epochs):
@@ -167,7 +166,7 @@ class IntermediateFusionMLP(nn.Module):
                 
                 optimizer.zero_grad()
                 logits = self.forward(feat_1, feat_2)
-                loss = criterion(logits, lbl)
+                loss = criterion(logits, lbl.float().unsqueeze(1))
                 loss.backward()
                 optimizer.step()
                 
@@ -210,12 +209,12 @@ class IntermediateFusionMLP(nn.Module):
             y_score = self.predict_proba(test_feature_1, test_feature_2).numpy()
 
         result_metrics = {
-            "test_loss": nn.CrossEntropyLoss()(output, y_true).item(),
+            "test_loss": nn.BCEWithLogitsLoss()(output, test_labels.float().unsqueeze(1)).item(),
             "test_acc": accuracy_score(y_true, y_pred),
             "test_f1": f1_score(y_true, y_pred),
             "test_conf_mat": confusion_matrix(y_true, y_pred),
-            "test_roc_auc": roc_auc_score(y_true, y_score[:, 1]),
-            "test_roc_curve": roc_curve(y_true, y_score[:, 1])
+            "test_roc_auc": roc_auc_score(y_true, torch.sigmoid(output).detach().cpu().numpy()),
+            "test_roc_curve": roc_curve(y_true, torch.sigmoid(output).detach().cpu().numpy())
         }
 
         return result_metrics
