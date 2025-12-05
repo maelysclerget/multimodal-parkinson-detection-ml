@@ -1,12 +1,14 @@
 """
-CNN model for mel spectrogram classification
-Basic 5-fold CV with recording and patient-level aggregation
+ResNet18 (pre-trained) model for mel spectrogram classification
+Uses ImageNet pre-trained weights with transfer learning
+5-fold CV with recording and patient-level aggregation
 """
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
+import torchvision.models as models
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -21,6 +23,7 @@ warnings.filterwarnings('ignore')
 class MelSpectrogramDataset(Dataset):
     """
     Dataset for loading pre-computed mel spectrogram JPG images
+    Converts grayscale to 3-channel for pre-trained ResNet
     """
     def __init__(self, file_paths, labels, health_codes):
         """
@@ -38,124 +41,65 @@ class MelSpectrogramDataset(Dataset):
     
     def __getitem__(self, idx):
         # Load JPG mel spectrogram
-        img = Image.open(self.file_paths[idx]).convert('L')  # Grayscale
+        img = Image.open(self.file_paths[idx]).convert('RGB')  # RGB for pre-trained model
         img_array = np.array(img, dtype=np.float32)
         
         # Normalize to [0, 1]
         img_array = img_array / 255.0
         
-        # Convert to tensor and add channel dimension
-        mel_spec_tensor = torch.FloatTensor(img_array).unsqueeze(0)  # Shape: (1, H, W)
+        # ImageNet normalization (standard for pre-trained models)
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+        img_array = (img_array - mean) / std
+        
+        # Convert to tensor: (H, W, C) -> (C, H, W)
+        mel_spec_tensor = torch.FloatTensor(img_array).permute(2, 0, 1)
         label = torch.LongTensor([self.labels[idx]])
         
         return mel_spec_tensor, label, self.health_codes[idx]
 
 
-class CNNMelSpectrogramClassifier(nn.Module):
+class ResNetMelSpectrogramClassifier(nn.Module):
     """
-    Simple CNN classifier for mel spectrograms
+    ResNet18 with pre-trained ImageNet weights
+    Adapted for binary classification
     """
-    def __init__(self, num_classes=2, dropout=0.5):
+    def __init__(self, num_classes=2, dropout=0.5, pretrained=True):
         """
         Args:
             num_classes: Number of output classes (2 for binary classification)
-            dropout: Dropout probability
+            dropout: Dropout probability for final classifier
+            pretrained: Whether to use ImageNet pre-trained weights
         """
-        super(CNNMelSpectrogramClassifier, self).__init__()
+        super(ResNetMelSpectrogramClassifier, self).__init__()
         
-        # Convolutional layers
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.relu1 = nn.ReLU()
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout1 = nn.Dropout2d(dropout * 0.5)
+        # Load pre-trained ResNet18
+        self.resnet = models.resnet18(pretrained=pretrained)
         
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.relu2 = nn.ReLU()
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout2 = nn.Dropout2d(dropout * 0.5)
+        if pretrained:
+            print("  ✓ Loaded ImageNet pre-trained ResNet18 weights")
         
-        self.conv3 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.relu3 = nn.ReLU()
-        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout3 = nn.Dropout2d(dropout * 0.5)
+        # Get number of features from ResNet's final layer
+        num_features = self.resnet.fc.in_features
         
-        self.conv4 = nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1)
-        self.bn4 = nn.BatchNorm2d(256)
-        self.relu4 = nn.ReLU()
-        self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout4 = nn.Dropout2d(dropout * 0.5)
-        
-        # Global average pooling
-        self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
-        
-        # Fully connected layers
-        self.fc1 = nn.Linear(256, 128)
-        self.relu_fc1 = nn.ReLU()
-        self.dropout_fc1 = nn.Dropout(dropout)
-        
-        self.fc2 = nn.Linear(128, 64)
-        self.relu_fc2 = nn.ReLU()
-        self.dropout_fc2 = nn.Dropout(dropout)
-        
-        self.fc3 = nn.Linear(64, num_classes)
+        # Replace final fully connected layer with custom classifier
+        # Add dropout for regularization
+        self.resnet.fc = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(num_features, num_classes)
+        )
     
     def forward(self, x):
         """
         Forward pass
         
         Args:
-            x: Input tensor of shape (batch_size, 1, n_mels, time)
+            x: Input tensor of shape (batch_size, 3, H, W)
         
         Returns:
             Output logits of shape (batch_size, num_classes)
         """
-        # Conv block 1
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu1(x)
-        x = self.pool1(x)
-        x = self.dropout1(x)
-        
-        # Conv block 2
-        x = self.conv2(x)
-        x = self.bn2(x)
-        x = self.relu2(x)
-        x = self.pool2(x)
-        x = self.dropout2(x)
-        
-        # Conv block 3
-        x = self.conv3(x)
-        x = self.bn3(x)
-        x = self.relu3(x)
-        x = self.pool3(x)
-        x = self.dropout3(x)
-        
-        # Conv block 4
-        x = self.conv4(x)
-        x = self.bn4(x)
-        x = self.relu4(x)
-        x = self.pool4(x)
-        x = self.dropout4(x)
-        
-        # Global average pooling
-        x = self.global_avg_pool(x)
-        x = x.view(x.size(0), -1)  # Flatten
-        
-        # Fully connected layers
-        x = self.fc1(x)
-        x = self.relu_fc1(x)
-        x = self.dropout_fc1(x)
-        
-        x = self.fc2(x)
-        x = self.relu_fc2(x)
-        x = self.dropout_fc2(x)
-        
-        x = self.fc3(x)
-        
-        return x
+        return self.resnet(x)
 
 
 def train_epoch(model, dataloader, criterion, optimizer, device):
@@ -314,13 +258,16 @@ def train_model(
     learning_rate=0.001,
     device='cuda',
     patience=15,
+    min_epochs=15,
     aggregation_method='majority_vote'
 ):
     """
     Training loop with dynamic learning rate, early stopping based on validation patient-level AUC
-    Multi-GPU support with DataParallel and mixed precision training
+    Multi-GPU support with DataParallel
     
     Args:
+        patience: Number of epochs without improvement before early stopping
+        min_epochs: Minimum number of epochs before early stopping is allowed (warm-up period)
         aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
     """
     # Multi-GPU setup
@@ -332,9 +279,11 @@ def train_model(
     
     # Class weighting for imbalanced data
     # Data: 77% PD (label=1), 23% Control (label=0)
-    # Weight minority class (Control) higher: [Control_weight, PD_weight] = [3.0, 1.0]
+    # Weight minority class (Control) higher: [Control_weight, PD_weight] = [3.25, 1.0]
     class_weights = torch.FloatTensor([3.25, 1.0]).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
+    
+    # Lower learning rate for fine-tuning pre-trained model
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=5e-5)
     
     # Learning rate scheduler: reduce LR when validation AUC plateaus
@@ -399,8 +348,8 @@ def train_model(
         else:
             epochs_without_improvement += 1
         
-        # Early stopping
-        if epochs_without_improvement >= patience:
+        # Early stopping (only after minimum epochs warm-up)
+        if epoch + 1 >= min_epochs and epochs_without_improvement >= patience:
             print(f"\nEarly stopping at epoch {epoch+1} (no improvement for {patience} epochs)")
             break
     
@@ -420,15 +369,17 @@ def run_5fold_cv(
     val_test_split_csv,
     batch_size=32,
     num_epochs=100,
-    learning_rate=0.001,
+    learning_rate=0.0003,
     dropout=0.5,
-    patience=15,
+    patience=25,
+    min_epochs=15,
     device='cuda',
-    output_dir='cnn_results',
-    aggregation_method='majority_vote'
+    output_dir='resnet_results',
+    aggregation_method='majority_vote',
+    pretrained=True
 ):
     """
-    Run 5-fold cross-validation
+    Run 5-fold cross-validation with ResNet18
     
     Args:
         melspec_dir: Directory containing mel spectrogram JPG files
@@ -437,12 +388,14 @@ def run_5fold_cv(
         val_test_split_csv: Path to val/test split CSV
         batch_size: Batch size for training
         num_epochs: Maximum number of epochs
-        learning_rate: Initial learning rate
+        learning_rate: Initial learning rate (lower for pre-trained models)
         dropout: Dropout probability
-        patience: Early stopping patience
+        patience: Early stopping patience (epochs without improvement)
+        min_epochs: Minimum epochs before early stopping is allowed
         device: Device to train on ('cuda' or 'cpu')
         output_dir: Directory to save results and plots
         aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
+        pretrained: Whether to use ImageNet pre-trained weights
     
     Returns:
         DataFrame with results for all folds
@@ -453,6 +406,7 @@ def run_5fold_cv(
     os.makedirs(plots_dir, exist_ok=True)
     print(f"Results will be saved to: {output_dir}")
     print(f"Plots will be saved to: {plots_dir}")
+    
     # Load labels
     print("Loading labels...")
     label_df = pd.read_csv(label_csv, sep=';')
@@ -470,7 +424,6 @@ def run_5fold_cv(
     print(f"  Found {len(all_files)} .jpg files")
     
     # Parse filenames to extract healthCode
-    # Format: healthCode_recordingId_audio_audio_m4a.jpg
     file_info = []
     for fname in all_files:
         parts = fname.replace('.jpg', '').split('_')
@@ -545,8 +498,9 @@ def run_5fold_cv(
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
         
-        # Initialize model
-        model = CNNMelSpectrogramClassifier(num_classes=2, dropout=dropout)
+        # Initialize ResNet model with pre-trained weights
+        print("\nInitializing ResNet18 model...")
+        model = ResNetMelSpectrogramClassifier(num_classes=2, dropout=dropout, pretrained=pretrained)
         
         # Train
         trained_model, best_val_metrics, training_history = train_model(
@@ -557,6 +511,7 @@ def run_5fold_cv(
             learning_rate=learning_rate,
             device=device,
             patience=patience,
+            min_epochs=min_epochs,
             aggregation_method=aggregation_method
         )
         
@@ -566,7 +521,7 @@ def run_5fold_cv(
         
         # Plot training history
         fig, axes = plt.subplots(2, 2, figsize=(12, 10))
-        fig.suptitle(f'Fold {fold} Training History', fontsize=16)
+        fig.suptitle(f'Fold {fold} Training History (ResNet18)', fontsize=16)
         
         # Loss
         axes[0, 0].plot(history_df['epoch'], history_df['train_loss'], 'b-', label='Train Loss')
@@ -640,7 +595,7 @@ def run_5fold_cv(
     results_df = pd.DataFrame(results_summary)
     
     print("\n" + "="*80)
-    print("5-FOLD CROSS-VALIDATION SUMMARY")
+    print("5-FOLD CROSS-VALIDATION SUMMARY (ResNet18)")
     print("="*80)
     print("\nPer-Fold Results:")
     print(results_df.to_string(index=False))
@@ -660,15 +615,17 @@ def run_5fold_cv(
     # Create summary statistics file
     with open(f'{output_dir}/summary_statistics.txt', 'w') as f:
         f.write("="*80 + "\n")
-        f.write("5-FOLD CROSS-VALIDATION SUMMARY STATISTICS\n")
+        f.write("5-FOLD CROSS-VALIDATION SUMMARY STATISTICS (ResNet18 Pre-trained)\n")
         f.write("="*80 + "\n\n")
         
+        f.write(f"Model: ResNet18 (ImageNet pre-trained: {pretrained})\n")
         f.write(f"Hyperparameters:\n")
         f.write(f"  Batch Size: {batch_size}\n")
         f.write(f"  Learning Rate: {learning_rate}\n")
         f.write(f"  Dropout: {dropout}\n")
         f.write(f"  Max Epochs: {num_epochs}\n")
         f.write(f"  Early Stopping Patience: {patience}\n")
+        f.write(f"  Minimum Epochs (Warm-up): {min_epochs}\n")
         f.write(f"  Aggregation Method: {aggregation_method}\n\n")
         
         f.write("--- VALIDATION SET ---\n\n")
@@ -704,7 +661,7 @@ def run_5fold_cv(
     
     # Create comparison plots
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('5-Fold Cross-Validation Performance Summary', fontsize=16, fontweight='bold')
+    fig.suptitle('5-Fold Cross-Validation Performance Summary (ResNet18)', fontsize=16, fontweight='bold')
     
     # Test AUC comparison (Recording vs Patient)
     folds = results_df['fold'].values
@@ -793,7 +750,7 @@ def run_5fold_cv(
 
 if __name__ == "__main__":
     """
-    5-fold cross-validation with recording and patient-level results
+    5-fold cross-validation with ResNet18 (pre-trained) and recording/patient-level results
     """
     
     # Paths
@@ -802,13 +759,15 @@ if __name__ == "__main__":
     TRAIN_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
     VAL_TEST_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
     
-    # Hyperparameters
+    # Hyperparameters (optimized for pre-trained ResNet)
     BATCH_SIZE = 64  # Total batch size (splits across GPUs with DataParallel)
     NUM_EPOCHS = 100
-    LEARNING_RATE = 0.001
+    LEARNING_RATE = 0.0003  # Lower LR for fine-tuning pre-trained model
     DROPOUT = 0.35
-    PATIENCE = 20
+    PATIENCE = 25  # Increased for transfer learning
+    MIN_EPOCHS = 15  # Warm-up period before early stopping
     AGGREGATION_METHOD = 'average'  # or 'majority_vote'
+    PRETRAINED = True  # Use ImageNet pre-trained weights
     
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -830,7 +789,9 @@ if __name__ == "__main__":
         learning_rate=LEARNING_RATE,
         dropout=DROPOUT,
         patience=PATIENCE,
+        min_epochs=MIN_EPOCHS,
         device=device,
-        output_dir='/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/CNN/V2',
-        aggregation_method=AGGREGATION_METHOD
+        output_dir='/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/ResNet18/V1_pretrained',
+        aggregation_method=AGGREGATION_METHOD,
+        pretrained=PRETRAINED
     )

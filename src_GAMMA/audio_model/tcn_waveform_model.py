@@ -1,6 +1,6 @@
 """
-CNN model for mel spectrogram classification
-Basic 5-fold CV with recording and patient-level aggregation
+TCN model for audio waveform classification
+5-fold CV with recording and patient-level aggregation
 """
 
 import torch
@@ -9,153 +9,129 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import pandas as pd
-from PIL import Image
 import os
+import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score, confusion_matrix
 from collections import Counter
-import matplotlib.pyplot as plt
 import warnings
+
 warnings.filterwarnings('ignore')
 
 
-class MelSpectrogramDataset(Dataset):
+class WaveformDataset(Dataset):
     """
-    Dataset for loading pre-computed mel spectrogram JPG images
+    Dataset for loading audio waveforms from .npy files
     """
-    def __init__(self, file_paths, labels, health_codes):
+    def __init__(self, file_paths, labels, health_codes, max_length=441000):
         """
         Args:
-            file_paths: List of paths to .jpg mel spectrogram files
+            file_paths: List of paths to .npy waveform files
             labels: List of labels (0 or 1 for binary classification)
             health_codes: List of health codes for patient-level grouping
+            max_length: Maximum waveform length (default: 10s at 44100 Hz)
         """
         self.file_paths = file_paths
         self.labels = labels
         self.health_codes = health_codes
+        self.max_length = max_length
     
     def __len__(self):
         return len(self.file_paths)
     
     def __getitem__(self, idx):
-        # Load JPG mel spectrogram
-        img = Image.open(self.file_paths[idx]).convert('L')  # Grayscale
-        img_array = np.array(img, dtype=np.float32)
+        # Load waveform
+        waveform = np.load(self.file_paths[idx])
         
-        # Normalize to [0, 1]
-        img_array = img_array / 255.0
+        # Pad or truncate to max_length
+        if len(waveform) < self.max_length:
+            # Pad with zeros
+            waveform = np.pad(waveform, (0, self.max_length - len(waveform)))
+        else:
+            # Truncate
+            waveform = waveform[:self.max_length]
         
         # Convert to tensor and add channel dimension
-        mel_spec_tensor = torch.FloatTensor(img_array).unsqueeze(0)  # Shape: (1, H, W)
+        waveform = torch.FloatTensor(waveform).unsqueeze(0)  # Shape: (1, max_length)
         label = torch.LongTensor([self.labels[idx]])
         
-        return mel_spec_tensor, label, self.health_codes[idx]
+        return waveform, label, self.health_codes[idx]
 
 
-class CNNMelSpectrogramClassifier(nn.Module):
+class TemporalBlock(nn.Module):
     """
-    Simple CNN classifier for mel spectrograms
+    Single temporal block with dilated causal convolution
     """
-    def __init__(self, num_classes=2, dropout=0.5):
+    def __init__(self, n_inputs, n_outputs, kernel_size, stride, dilation, padding, dropout=0.2):
+        super(TemporalBlock, self).__init__()
+        self.conv1 = nn.Conv1d(n_inputs, n_outputs, kernel_size,
+                               stride=stride, padding=padding, dilation=dilation)
+        self.relu1 = nn.ReLU()
+        self.dropout1 = nn.Dropout(dropout)
+        
+        self.conv2 = nn.Conv1d(n_outputs, n_outputs, kernel_size,
+                               stride=stride, padding=padding, dilation=dilation)
+        self.relu2 = nn.ReLU()
+        self.dropout2 = nn.Dropout(dropout)
+        
+        self.net = nn.Sequential(self.conv1, self.relu1, self.dropout1,
+                                self.conv2, self.relu2, self.dropout2)
+        self.downsample = nn.Conv1d(n_inputs, n_outputs, 1) if n_inputs != n_outputs else None
+        self.relu = nn.ReLU()
+    
+    def forward(self, x):
+        out = self.net(x)
+        res = x if self.downsample is None else self.downsample(x)
+        return self.relu(out + res)
+
+
+class TCNWaveformClassifier(nn.Module):
+    """
+    Temporal Convolutional Network for raw audio waveforms
+    """
+    def __init__(self, num_inputs=1, num_channels=[32, 64, 128, 256], 
+                 kernel_size=3, dropout=0.2, num_classes=2):
         """
         Args:
-            num_classes: Number of output classes (2 for binary classification)
+            num_inputs: Number of input channels (1 for raw audio)
+            num_channels: List of channel numbers for each TCN layer
+            kernel_size: Kernel size for convolutions
             dropout: Dropout probability
+            num_classes: Number of output classes (2 for binary classification)
         """
-        super(CNNMelSpectrogramClassifier, self).__init__()
+        super(TCNWaveformClassifier, self).__init__()
+        layers = []
+        num_levels = len(num_channels)
         
-        # Convolutional layers
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.relu1 = nn.ReLU()
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout1 = nn.Dropout2d(dropout * 0.5)
+        for i in range(num_levels):
+            dilation_size = 2 ** i
+            in_channels = num_inputs if i == 0 else num_channels[i-1]
+            out_channels = num_channels[i]
+            padding = (kernel_size - 1) * dilation_size
+            
+            layers += [TemporalBlock(in_channels, out_channels, kernel_size, stride=1, 
+                                    dilation=dilation_size, padding=padding, dropout=dropout)]
         
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.relu2 = nn.ReLU()
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout2 = nn.Dropout2d(dropout * 0.5)
-        
-        self.conv3 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.relu3 = nn.ReLU()
-        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout3 = nn.Dropout2d(dropout * 0.5)
-        
-        self.conv4 = nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1)
-        self.bn4 = nn.BatchNorm2d(256)
-        self.relu4 = nn.ReLU()
-        self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout4 = nn.Dropout2d(dropout * 0.5)
-        
-        # Global average pooling
-        self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
-        
-        # Fully connected layers
-        self.fc1 = nn.Linear(256, 128)
-        self.relu_fc1 = nn.ReLU()
-        self.dropout_fc1 = nn.Dropout(dropout)
-        
-        self.fc2 = nn.Linear(128, 64)
-        self.relu_fc2 = nn.ReLU()
-        self.dropout_fc2 = nn.Dropout(dropout)
-        
-        self.fc3 = nn.Linear(64, num_classes)
+        self.network = nn.Sequential(*layers)
+        self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
+        self.fc = nn.Linear(num_channels[-1], num_classes)
     
     def forward(self, x):
         """
         Forward pass
         
         Args:
-            x: Input tensor of shape (batch_size, 1, n_mels, time)
+            x: Input tensor of shape (batch_size, 1, sequence_length)
         
         Returns:
             Output logits of shape (batch_size, num_classes)
         """
-        # Conv block 1
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu1(x)
-        x = self.pool1(x)
-        x = self.dropout1(x)
-        
-        # Conv block 2
-        x = self.conv2(x)
-        x = self.bn2(x)
-        x = self.relu2(x)
-        x = self.pool2(x)
-        x = self.dropout2(x)
-        
-        # Conv block 3
-        x = self.conv3(x)
-        x = self.bn3(x)
-        x = self.relu3(x)
-        x = self.pool3(x)
-        x = self.dropout3(x)
-        
-        # Conv block 4
-        x = self.conv4(x)
-        x = self.bn4(x)
-        x = self.relu4(x)
-        x = self.pool4(x)
-        x = self.dropout4(x)
-        
+        # TCN expects (batch, channels, length)
+        y = self.network(x)
         # Global average pooling
-        x = self.global_avg_pool(x)
-        x = x.view(x.size(0), -1)  # Flatten
-        
-        # Fully connected layers
-        x = self.fc1(x)
-        x = self.relu_fc1(x)
-        x = self.dropout_fc1(x)
-        
-        x = self.fc2(x)
-        x = self.relu_fc2(x)
-        x = self.dropout_fc2(x)
-        
-        x = self.fc3(x)
-        
-        return x
+        y = self.global_avg_pool(y)
+        y = y.view(y.size(0), -1)
+        # Classification
+        return self.fc(y)
 
 
 def train_epoch(model, dataloader, criterion, optimizer, device):
@@ -167,13 +143,13 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
     correct = 0
     total = 0
     
-    for mel_specs, labels, _ in dataloader:
-        mel_specs = mel_specs.to(device)
+    for waveforms, labels, _ in dataloader:
+        waveforms = waveforms.to(device)
         labels = labels.squeeze(1).to(device)  # Keep as 1D tensor
         
         # Forward pass
         optimizer.zero_grad()
-        outputs = model(mel_specs)
+        outputs = model(waveforms)
         loss = criterion(outputs, labels)
         
         # Backward pass
@@ -192,12 +168,10 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
     return avg_loss, accuracy
 
 
-def evaluate(model, dataloader, device, aggregation_method='majority_vote'):
+def evaluate(model, dataloader, device):
     """
     Evaluate model at recording and patient level
-    
-    Args:
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
+    Patient-level: Majority vote aggregation
     """
     model.eval()
     
@@ -208,12 +182,12 @@ def evaluate(model, dataloader, device, aggregation_method='majority_vote'):
     all_health_codes = []
     
     with torch.no_grad():
-        for mel_specs, labels, health_codes in dataloader:
-            mel_specs = mel_specs.to(device)
+        for waveforms, labels, health_codes in dataloader:
+            waveforms = waveforms.to(device)
             labels = labels.squeeze(1).to(device)  # Keep as 1D tensor
             
             # Forward pass
-            outputs = model(mel_specs)
+            outputs = model(waveforms)
             probs = torch.softmax(outputs, dim=1)
             
             # Get predictions
@@ -242,7 +216,7 @@ def evaluate(model, dataloader, device, aggregation_method='majority_vote'):
     except:
         rec_auc = 0.0
     
-    # Patient-level aggregation
+    # Patient-level aggregation using MAJORITY VOTE
     unique_health_codes = np.unique(all_health_codes)
     patient_labels = []
     patient_preds = []
@@ -252,18 +226,13 @@ def evaluate(model, dataloader, device, aggregation_method='majority_vote'):
         mask = all_health_codes == hc
         patient_label = all_labels[mask][0]  # All recordings from same patient have same label
         
+        # Majority vote: most common prediction
+        rec_preds = all_preds[mask]
+        vote_counts = Counter(rec_preds)
+        patient_pred = vote_counts.most_common(1)[0][0]
+        
         # Average probability for AUC calculation
         patient_prob = np.mean(all_probs[mask])
-        
-        # Patient prediction based on aggregation method
-        if aggregation_method == 'average':
-            # Use averaged probability with threshold
-            patient_pred = 1 if patient_prob >= 0.5 else 0
-        else:  # majority_vote
-            # Majority vote: most common prediction
-            rec_preds = all_preds[mask]
-            vote_counts = Counter(rec_preds)
-            patient_pred = vote_counts.most_common(1)[0][0]
         
         patient_labels.append(patient_label)
         patient_preds.append(patient_pred)
@@ -313,15 +282,11 @@ def train_model(
     num_epochs=50,
     learning_rate=0.001,
     device='cuda',
-    patience=15,
-    aggregation_method='majority_vote'
+    patience=15
 ):
     """
     Training loop with dynamic learning rate, early stopping based on validation patient-level AUC
-    Multi-GPU support with DataParallel and mixed precision training
-    
-    Args:
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
+    Multi-GPU support with DataParallel
     """
     # Multi-GPU setup
     if device.type == 'cuda' and torch.cuda.device_count() > 1:
@@ -333,9 +298,9 @@ def train_model(
     # Class weighting for imbalanced data
     # Data: 77% PD (label=1), 23% Control (label=0)
     # Weight minority class (Control) higher: [Control_weight, PD_weight] = [3.0, 1.0]
-    class_weights = torch.FloatTensor([3.25, 1.0]).to(device)
+    class_weights = torch.FloatTensor([3.0, 1.0]).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=5e-5)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     
     # Learning rate scheduler: reduce LR when validation AUC plateaus
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -344,6 +309,7 @@ def train_model(
     
     best_val_auc = 0.0
     best_metrics = None
+    best_model_state = None
     epochs_without_improvement = 0
     
     # Track training history
@@ -363,7 +329,7 @@ def train_model(
         train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, device)
         
         # Validate
-        val_metrics = evaluate(model, val_loader, device, aggregation_method)
+        val_metrics = evaluate(model, val_loader, device)
         
         # Update learning rate based on validation patient AUC
         scheduler.step(val_metrics['patient_auc'])
@@ -388,20 +354,18 @@ def train_model(
         if val_metrics['patient_auc'] > best_val_auc:
             best_val_auc = val_metrics['patient_auc']
             best_metrics = val_metrics.copy()
-            epochs_without_improvement = 0
-            # Handle DataParallel wrapper
             if isinstance(model, nn.DataParallel):
-                best_model_state = model.module.state_dict().copy()
+                best_model_state = model.module.state_dict()
             else:
-                best_model_state = model.state_dict().copy()
-            if epoch > 0:
-                print(f"  ✓ New best model (Patient AUC: {best_val_auc:.4f})")
+                best_model_state = model.state_dict()
+            epochs_without_improvement = 0
+            print(f"  ✓ Best model saved (Patient AUC: {best_val_auc:.4f})")
         else:
             epochs_without_improvement += 1
         
         # Early stopping
         if epochs_without_improvement >= patience:
-            print(f"\nEarly stopping at epoch {epoch+1} (no improvement for {patience} epochs)")
+            print(f"\nEarly stopping triggered after {epoch+1} epochs (no improvement for {patience} epochs)")
             break
     
     # Load best model (handle DataParallel)
@@ -414,35 +378,39 @@ def train_model(
 
 
 def run_5fold_cv(
-    melspec_dir,
+    waveform_dir,
     label_csv,
     train_split_csv,
     val_test_split_csv,
     batch_size=32,
     num_epochs=100,
     learning_rate=0.001,
-    dropout=0.5,
+    num_channels=[32, 64, 128, 256],
+    kernel_size=3,
+    dropout=0.2,
     patience=15,
     device='cuda',
-    output_dir='cnn_results',
-    aggregation_method='majority_vote'
+    output_dir='tcn_results',
+    max_length=441000
 ):
     """
     Run 5-fold cross-validation
     
     Args:
-        melspec_dir: Directory containing mel spectrogram JPG files
+        waveform_dir: Directory containing .npy waveform files
         label_csv: Path to CSV file with healthCode and labels
         train_split_csv: Path to train split CSV
         val_test_split_csv: Path to val/test split CSV
         batch_size: Batch size for training
         num_epochs: Maximum number of epochs
         learning_rate: Initial learning rate
+        num_channels: List of channel numbers for TCN layers
+        kernel_size: Kernel size for convolutions
         dropout: Dropout probability
         patience: Early stopping patience
         device: Device to train on ('cuda' or 'cpu')
         output_dir: Directory to save results and plots
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
+        max_length: Maximum waveform length (samples)
     
     Returns:
         DataFrame with results for all folds
@@ -453,6 +421,7 @@ def run_5fold_cv(
     os.makedirs(plots_dir, exist_ok=True)
     print(f"Results will be saved to: {output_dir}")
     print(f"Plots will be saved to: {plots_dir}")
+    
     # Load labels
     print("Loading labels...")
     label_df = pd.read_csv(label_csv, sep=';')
@@ -464,26 +433,23 @@ def run_5fold_cv(
     train_splits = pd.read_csv(train_split_csv)
     val_test_splits = pd.read_csv(val_test_split_csv)
     
-    # Get all mel spectrogram files
-    print("\nFinding mel spectrogram files...")
-    all_files = [f for f in os.listdir(melspec_dir) if f.endswith('.jpg')]
-    print(f"  Found {len(all_files)} .jpg files")
+    # Get all waveform files
+    print("\nFinding waveform files...")
+    all_files = [f for f in os.listdir(waveform_dir) if f.endswith('.npy')]
+    print(f"  Found {len(all_files)} .npy files")
     
     # Parse filenames to extract healthCode
-    # Format: healthCode_recordingId_audio_audio_m4a.jpg
+    # Format: healthCode_recordingId_audio_audio_m4a.npy
     file_info = []
     for fname in all_files:
-        parts = fname.replace('.jpg', '').split('_')
+        parts = fname.replace('.npy', '').split('_')
         if len(parts) >= 2:
-            health_code = parts[0]
-            
-            # Only include if we have a label
-            if health_code in healthcode_to_label:
+            healthcode = parts[0]
+            if healthcode in healthcode_to_label:
                 file_info.append({
-                    'filename': fname,
-                    'filepath': os.path.join(melspec_dir, fname),
-                    'healthCode': health_code,
-                    'label': healthcode_to_label[health_code]
+                    'filepath': os.path.join(waveform_dir, fname),
+                    'healthCode': healthcode,
+                    'label': healthcode_to_label[healthcode]
                 })
     
     file_df = pd.DataFrame(file_info)
@@ -524,20 +490,23 @@ def run_5fold_cv(
         print(f"Test:  {len(test_data)} recordings")
         
         # Create datasets
-        train_dataset = MelSpectrogramDataset(
+        train_dataset = WaveformDataset(
             train_data['filepath'].tolist(),
             train_data['label'].tolist(),
-            train_data['healthCode'].tolist()
+            train_data['healthCode'].tolist(),
+            max_length=max_length
         )
-        val_dataset = MelSpectrogramDataset(
+        val_dataset = WaveformDataset(
             val_data['filepath'].tolist(),
             val_data['label'].tolist(),
-            val_data['healthCode'].tolist()
+            val_data['healthCode'].tolist(),
+            max_length=max_length
         )
-        test_dataset = MelSpectrogramDataset(
+        test_dataset = WaveformDataset(
             test_data['filepath'].tolist(),
             test_data['label'].tolist(),
-            test_data['healthCode'].tolist()
+            test_data['healthCode'].tolist(),
+            max_length=max_length
         )
         
         # Create data loaders
@@ -546,7 +515,13 @@ def run_5fold_cv(
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
         
         # Initialize model
-        model = CNNMelSpectrogramClassifier(num_classes=2, dropout=dropout)
+        model = TCNWaveformClassifier(
+            num_inputs=1,
+            num_channels=num_channels,
+            kernel_size=kernel_size,
+            dropout=dropout,
+            num_classes=2
+        )
         
         # Train
         trained_model, best_val_metrics, training_history = train_model(
@@ -556,8 +531,7 @@ def run_5fold_cv(
             num_epochs=num_epochs,
             learning_rate=learning_rate,
             device=device,
-            patience=patience,
-            aggregation_method=aggregation_method
+            patience=patience
         )
         
         # Save training history
@@ -607,7 +581,7 @@ def run_5fold_cv(
         plt.close()
         
         # Evaluate best model on TEST set
-        test_metrics = evaluate(trained_model, test_loader, device, aggregation_method)
+        test_metrics = evaluate(trained_model, test_loader, device)
         
         # Print summary for this fold
         print(f"\nFold {fold} - Best Model Performance:")
@@ -616,7 +590,8 @@ def run_5fold_cv(
         
         results_summary.append({
             'fold': fold,
-            # Validation metrics
+            'num_train_patients': len(train_hcs),
+            'num_val_patients': len(val_hcs),
             'val_rec_auc': best_val_metrics['rec_auc'],
             'val_rec_acc': best_val_metrics['rec_accuracy'],
             'val_rec_sens': best_val_metrics['rec_sensitivity'],
@@ -625,7 +600,7 @@ def run_5fold_cv(
             'val_patient_acc': best_val_metrics['patient_accuracy'],
             'val_patient_sens': best_val_metrics['patient_sensitivity'],
             'val_patient_spec': best_val_metrics['patient_specificity'],
-            # Test metrics
+            'num_test_patients': len(test_hcs),
             'test_rec_auc': test_metrics['rec_auc'],
             'test_rec_acc': test_metrics['rec_accuracy'],
             'test_rec_sens': test_metrics['rec_sensitivity'],
@@ -646,7 +621,7 @@ def run_5fold_cv(
     print(results_df.to_string(index=False))
     
     print("\n" + "="*80)
-    print(f"TEST SET - AVERAGE PERFORMANCE (Patient-Level {aggregation_method.replace('_', ' ').title()})")
+    print("TEST SET - AVERAGE PERFORMANCE (Patient-Level Majority Vote)")
     print("="*80)
     print(f"  AUC:         {results_df['test_patient_auc'].mean():.4f} ± {results_df['test_patient_auc'].std():.4f}")
     print(f"  Accuracy:    {results_df['test_patient_acc'].mean():.2f}% ± {results_df['test_patient_acc'].std():.2f}%")
@@ -660,16 +635,18 @@ def run_5fold_cv(
     # Create summary statistics file
     with open(f'{output_dir}/summary_statistics.txt', 'w') as f:
         f.write("="*80 + "\n")
-        f.write("5-FOLD CROSS-VALIDATION SUMMARY STATISTICS\n")
+        f.write("5-FOLD CROSS-VALIDATION SUMMARY STATISTICS - TCN WAVEFORM MODEL\n")
         f.write("="*80 + "\n\n")
         
         f.write(f"Hyperparameters:\n")
         f.write(f"  Batch Size: {batch_size}\n")
         f.write(f"  Learning Rate: {learning_rate}\n")
+        f.write(f"  Num Channels: {num_channels}\n")
+        f.write(f"  Kernel Size: {kernel_size}\n")
         f.write(f"  Dropout: {dropout}\n")
         f.write(f"  Max Epochs: {num_epochs}\n")
         f.write(f"  Early Stopping Patience: {patience}\n")
-        f.write(f"  Aggregation Method: {aggregation_method}\n\n")
+        f.write(f"  Max Waveform Length: {max_length} samples\n\n")
         
         f.write("--- VALIDATION SET ---\n\n")
         f.write("Recording-Level:\n")
@@ -678,7 +655,7 @@ def run_5fold_cv(
         f.write(f"  Sensitivity: {results_df['val_rec_sens'].mean():.2f}% ± {results_df['val_rec_sens'].std():.2f}%\n")
         f.write(f"  Specificity: {results_df['val_rec_spec'].mean():.2f}% ± {results_df['val_rec_spec'].std():.2f}%\n\n")
         
-        f.write(f"Patient-Level ({aggregation_method.replace('_', ' ').title()}):\n")
+        f.write("Patient-Level (Majority Vote):\n")
         f.write(f"  AUC:         {results_df['val_patient_auc'].mean():.4f} ± {results_df['val_patient_auc'].std():.4f}\n")
         f.write(f"  Accuracy:    {results_df['val_patient_acc'].mean():.2f}% ± {results_df['val_patient_acc'].std():.2f}%\n")
         f.write(f"  Sensitivity: {results_df['val_patient_sens'].mean():.2f}% ± {results_df['val_patient_sens'].std():.2f}%\n")
@@ -691,7 +668,7 @@ def run_5fold_cv(
         f.write(f"  Sensitivity: {results_df['test_rec_sens'].mean():.2f}% ± {results_df['test_rec_sens'].std():.2f}%\n")
         f.write(f"  Specificity: {results_df['test_rec_spec'].mean():.2f}% ± {results_df['test_rec_spec'].std():.2f}%\n\n")
         
-        f.write(f"Patient-Level ({aggregation_method.replace('_', ' ').title()}):\n")
+        f.write("Patient-Level (Majority Vote):\n")
         f.write(f"  AUC:         {results_df['test_patient_auc'].mean():.4f} ± {results_df['test_patient_auc'].std():.4f}\n")
         f.write(f"  Accuracy:    {results_df['test_patient_acc'].mean():.2f}% ± {results_df['test_patient_acc'].std():.2f}%\n")
         f.write(f"  Sensitivity: {results_df['test_patient_sens'].mean():.2f}% ± {results_df['test_patient_sens'].std():.2f}%\n")
@@ -704,7 +681,7 @@ def run_5fold_cv(
     
     # Create comparison plots
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('5-Fold Cross-Validation Performance Summary', fontsize=16, fontweight='bold')
+    fig.suptitle('5-Fold Cross-Validation Performance Summary - TCN', fontsize=16, fontweight='bold')
     
     # Test AUC comparison (Recording vs Patient)
     folds = results_df['fold'].values
@@ -797,18 +774,20 @@ if __name__ == "__main__":
     """
     
     # Paths
-    MELSPEC_DIR = "/mloscratch/users/gnahas/data/melSpec"
+    WAVEFORM_DIR = "/mloscratch/users/gnahas/data/waveform_norm"
     LABEL_CSV = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
     TRAIN_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
     VAL_TEST_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
     
     # Hyperparameters
-    BATCH_SIZE = 64  # Total batch size (splits across GPUs with DataParallel)
+    BATCH_SIZE = 32  # Total batch size (splits across GPUs with DataParallel)
     NUM_EPOCHS = 100
     LEARNING_RATE = 0.001
-    DROPOUT = 0.35
-    PATIENCE = 20
-    AGGREGATION_METHOD = 'average'  # or 'majority_vote'
+    NUM_CHANNELS = [32, 64, 128, 256]
+    KERNEL_SIZE = 3
+    DROPOUT = 0.2
+    PATIENCE = 15
+    MAX_LENGTH = 441000  # 10 seconds at 44100 Hz
     
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -821,16 +800,18 @@ if __name__ == "__main__":
     
     # Run 5-fold cross-validation
     results_df = run_5fold_cv(
-        melspec_dir=MELSPEC_DIR,
+        waveform_dir=WAVEFORM_DIR,
         label_csv=LABEL_CSV,
         train_split_csv=TRAIN_SPLIT_CSV,
         val_test_split_csv=VAL_TEST_SPLIT_CSV,
         batch_size=BATCH_SIZE,
         num_epochs=NUM_EPOCHS,
         learning_rate=LEARNING_RATE,
+        num_channels=NUM_CHANNELS,
+        kernel_size=KERNEL_SIZE,
         dropout=DROPOUT,
         patience=PATIENCE,
         device=device,
-        output_dir='/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/CNN/V2',
-        aggregation_method=AGGREGATION_METHOD
+        output_dir='/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/TCN/V1',
+        max_length=MAX_LENGTH
     )

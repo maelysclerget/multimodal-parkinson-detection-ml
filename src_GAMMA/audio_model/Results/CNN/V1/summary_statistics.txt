@@ -1,0 +1,47 @@
+================================================================================
+5-FOLD CROSS-VALIDATION SUMMARY STATISTICS
+================================================================================
+
+Hyperparameters:
+  Batch Size: 32
+  Learning Rate: 0.001
+  Dropout: 0.5
+  Max Epochs: 100
+  Early Stopping Patience: 15
+
+--- VALIDATION SET ---
+
+Recording-Level:
+  AUC:         0.6791 ± 0.0438
+  Accuracy:    69.65% ± 7.31%
+  Sensitivity: 73.15% ± 13.33%
+  Specificity: 55.13% ± 20.27%
+
+Patient-Level (Majority Vote):
+  AUC:         0.6803 ± 0.0715
+  Accuracy:    64.06% ± 6.61%
+  Sensitivity: 68.84% ± 14.61%
+  Specificity: 57.81% ± 12.37%
+
+--- TEST SET (PRIMARY RESULTS) ---
+
+Recording-Level:
+  AUC:         0.6730 ± 0.0737
+  Accuracy:    66.91% ± 7.28%
+  Sensitivity: 70.06% ± 7.82%
+  Specificity: 58.93% ± 12.55%
+
+Patient-Level (Majority Vote):
+  AUC:         0.6558 ± 0.0582
+  Accuracy:    63.33% ± 5.27%
+  Sensitivity: 64.84% ± 4.42%
+  Specificity: 61.22% ± 9.47%
+
+
+Per-Fold Results:
+ fold  val_rec_auc  val_rec_acc  val_rec_sens  val_rec_spec  val_patient_auc  val_patient_acc  val_patient_sens  val_patient_spec  test_rec_auc  test_rec_acc  test_rec_sens  test_rec_spec  test_patient_auc  test_patient_acc  test_patient_sens  test_patient_spec
+    0     0.660262    66.138372     64.381933     71.994716         0.721311        65.714286         67.213115         63.636364      0.660538     62.133590      72.707889      40.059347          0.618259         56.310680          61.016949          50.000000
+    1     0.683565    79.310345     94.591247     19.903692         0.728986        69.811321         91.666667         41.304348      0.582850     65.102103      68.819334      52.708058          0.687779         66.666667          72.131148          59.090909
+    2     0.649751    62.315896     62.967581     59.452055         0.742029        69.811321         66.666667         73.913043      0.765070     77.504105      79.851363      68.378812          0.641667         60.377358          61.666667          58.695652
+    3     0.753320    75.434243     77.735002     61.372549         0.628249        60.576923         67.796610         51.111111      0.628787     59.167090      58.229426      63.287671          0.738768         69.811321          65.000000          76.086957
+    4     0.648734    65.064873     66.098081     62.908012         0.580894        54.368932         50.847458         59.090909      0.727855     70.636890      70.709015      70.196078          0.592467         63.461538          64.406780          62.222222

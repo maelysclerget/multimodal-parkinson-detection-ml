@@ -1,6 +1,6 @@
 """
-CNN model for mel spectrogram classification
-Basic 5-fold CV with recording and patient-level aggregation
+Vision Transformer (ViT) model for mel spectrogram classification
+5-fold CV with recording and patient-level aggregation
 """
 
 import torch
@@ -51,109 +51,176 @@ class MelSpectrogramDataset(Dataset):
         return mel_spec_tensor, label, self.health_codes[idx]
 
 
-class CNNMelSpectrogramClassifier(nn.Module):
+class PatchEmbedding(nn.Module):
     """
-    Simple CNN classifier for mel spectrograms
+    Split image into patches and embed them
     """
-    def __init__(self, num_classes=2, dropout=0.5):
+    def __init__(self, img_size=224, patch_size=16, in_channels=1, embed_dim=768):
+        super(PatchEmbedding, self).__init__()
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.n_patches = (img_size // patch_size) ** 2
+        
+        # Convolutional layer to split into patches and embed
+        self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+    
+    def forward(self, x):
+        # x: (batch_size, in_channels, H, W)
+        x = self.proj(x)  # (batch_size, embed_dim, n_patches**0.5, n_patches**0.5)
+        x = x.flatten(2)  # (batch_size, embed_dim, n_patches)
+        x = x.transpose(1, 2)  # (batch_size, n_patches, embed_dim)
+        return x
+
+
+class MultiHeadAttention(nn.Module):
+    """
+    Multi-head self-attention mechanism
+    """
+    def __init__(self, embed_dim=768, num_heads=12, dropout=0.1):
+        super(MultiHeadAttention, self).__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        
+        assert self.head_dim * num_heads == embed_dim, "embed_dim must be divisible by num_heads"
+        
+        self.qkv = nn.Linear(embed_dim, embed_dim * 3)
+        self.attn_drop = nn.Dropout(dropout)
+        self.proj = nn.Linear(embed_dim, embed_dim)
+        self.proj_drop = nn.Dropout(dropout)
+    
+    def forward(self, x):
+        batch_size, n_tokens, embed_dim = x.shape
+        
+        # Generate Q, K, V
+        qkv = self.qkv(x).reshape(batch_size, n_tokens, 3, self.num_heads, self.head_dim)
+        qkv = qkv.permute(2, 0, 3, 1, 4)  # (3, batch_size, num_heads, n_tokens, head_dim)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+        
+        # Attention scores
+        attn = (q @ k.transpose(-2, -1)) * (self.head_dim ** -0.5)
+        attn = attn.softmax(dim=-1)
+        attn = self.attn_drop(attn)
+        
+        # Apply attention to values
+        x = (attn @ v).transpose(1, 2).reshape(batch_size, n_tokens, embed_dim)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+
+class TransformerBlock(nn.Module):
+    """
+    Transformer encoder block
+    """
+    def __init__(self, embed_dim=768, num_heads=12, mlp_ratio=4.0, dropout=0.1):
+        super(TransformerBlock, self).__init__()
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn = MultiHeadAttention(embed_dim, num_heads, dropout)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        
+        mlp_hidden_dim = int(embed_dim * mlp_ratio)
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, mlp_hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_hidden_dim, embed_dim),
+            nn.Dropout(dropout)
+        )
+    
+    def forward(self, x):
+        # Self-attention with residual connection
+        x = x + self.attn(self.norm1(x))
+        # MLP with residual connection
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+class ViTMelSpectrogramClassifier(nn.Module):
+    """
+    Vision Transformer for mel spectrogram classification
+    """
+    def __init__(
+        self,
+        img_size=224,
+        patch_size=16,
+        in_channels=1,
+        num_classes=2,
+        embed_dim=768,
+        depth=12,
+        num_heads=12,
+        mlp_ratio=4.0,
+        dropout=0.1
+    ):
         """
         Args:
+            img_size: Input image size (assumed square)
+            patch_size: Size of each patch
+            in_channels: Number of input channels (1 for grayscale)
             num_classes: Number of output classes (2 for binary classification)
+            embed_dim: Embedding dimension
+            depth: Number of transformer blocks
+            num_heads: Number of attention heads
+            mlp_ratio: Ratio of MLP hidden dim to embedding dim
             dropout: Dropout probability
         """
-        super(CNNMelSpectrogramClassifier, self).__init__()
+        super(ViTMelSpectrogramClassifier, self).__init__()
         
-        # Convolutional layers
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=32, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(32)
-        self.relu1 = nn.ReLU()
-        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout1 = nn.Dropout2d(dropout * 0.5)
+        # Patch embedding
+        self.patch_embed = PatchEmbedding(img_size, patch_size, in_channels, embed_dim)
+        n_patches = self.patch_embed.n_patches
         
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(64)
-        self.relu2 = nn.ReLU()
-        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout2 = nn.Dropout2d(dropout * 0.5)
+        # Class token
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         
-        self.conv3 = nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(128)
-        self.relu3 = nn.ReLU()
-        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout3 = nn.Dropout2d(dropout * 0.5)
+        # Positional embedding
+        self.pos_embed = nn.Parameter(torch.zeros(1, n_patches + 1, embed_dim))
+        self.pos_drop = nn.Dropout(dropout)
         
-        self.conv4 = nn.Conv2d(in_channels=128, out_channels=256, kernel_size=3, padding=1)
-        self.bn4 = nn.BatchNorm2d(256)
-        self.relu4 = nn.ReLU()
-        self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.dropout4 = nn.Dropout2d(dropout * 0.5)
+        # Transformer blocks
+        self.blocks = nn.Sequential(*[
+            TransformerBlock(embed_dim, num_heads, mlp_ratio, dropout)
+            for _ in range(depth)
+        ])
         
-        # Global average pooling
-        self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        # Classification head
+        self.norm = nn.LayerNorm(embed_dim)
+        self.head = nn.Linear(embed_dim, num_classes)
         
-        # Fully connected layers
-        self.fc1 = nn.Linear(256, 128)
-        self.relu_fc1 = nn.ReLU()
-        self.dropout_fc1 = nn.Dropout(dropout)
-        
-        self.fc2 = nn.Linear(128, 64)
-        self.relu_fc2 = nn.ReLU()
-        self.dropout_fc2 = nn.Dropout(dropout)
-        
-        self.fc3 = nn.Linear(64, num_classes)
+        # Initialize weights
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
     
     def forward(self, x):
         """
         Forward pass
         
         Args:
-            x: Input tensor of shape (batch_size, 1, n_mels, time)
+            x: Input tensor of shape (batch_size, 1, H, W)
         
         Returns:
             Output logits of shape (batch_size, num_classes)
         """
-        # Conv block 1
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = self.relu1(x)
-        x = self.pool1(x)
-        x = self.dropout1(x)
+        batch_size = x.shape[0]
         
-        # Conv block 2
-        x = self.conv2(x)
-        x = self.bn2(x)
-        x = self.relu2(x)
-        x = self.pool2(x)
-        x = self.dropout2(x)
+        # Patch embedding
+        x = self.patch_embed(x)  # (batch_size, n_patches, embed_dim)
         
-        # Conv block 3
-        x = self.conv3(x)
-        x = self.bn3(x)
-        x = self.relu3(x)
-        x = self.pool3(x)
-        x = self.dropout3(x)
+        # Add class token
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)  # (batch_size, n_patches + 1, embed_dim)
         
-        # Conv block 4
-        x = self.conv4(x)
-        x = self.bn4(x)
-        x = self.relu4(x)
-        x = self.pool4(x)
-        x = self.dropout4(x)
+        # Add positional embedding
+        x = x + self.pos_embed
+        x = self.pos_drop(x)
         
-        # Global average pooling
-        x = self.global_avg_pool(x)
-        x = x.view(x.size(0), -1)  # Flatten
+        # Transformer blocks
+        x = self.blocks(x)
         
-        # Fully connected layers
-        x = self.fc1(x)
-        x = self.relu_fc1(x)
-        x = self.dropout_fc1(x)
-        
-        x = self.fc2(x)
-        x = self.relu_fc2(x)
-        x = self.dropout_fc2(x)
-        
-        x = self.fc3(x)
+        # Classification head (use class token)
+        x = self.norm(x)
+        cls_token_final = x[:, 0]
+        x = self.head(cls_token_final)
         
         return x
 
@@ -192,12 +259,10 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
     return avg_loss, accuracy
 
 
-def evaluate(model, dataloader, device, aggregation_method='majority_vote'):
+def evaluate(model, dataloader, device):
     """
     Evaluate model at recording and patient level
-    
-    Args:
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
+    Patient-level: Majority vote aggregation
     """
     model.eval()
     
@@ -242,7 +307,7 @@ def evaluate(model, dataloader, device, aggregation_method='majority_vote'):
     except:
         rec_auc = 0.0
     
-    # Patient-level aggregation
+    # Patient-level aggregation using MAJORITY VOTE
     unique_health_codes = np.unique(all_health_codes)
     patient_labels = []
     patient_preds = []
@@ -252,18 +317,13 @@ def evaluate(model, dataloader, device, aggregation_method='majority_vote'):
         mask = all_health_codes == hc
         patient_label = all_labels[mask][0]  # All recordings from same patient have same label
         
+        # Majority vote: most common prediction
+        rec_preds = all_preds[mask]
+        vote_counts = Counter(rec_preds)
+        patient_pred = vote_counts.most_common(1)[0][0]
+        
         # Average probability for AUC calculation
         patient_prob = np.mean(all_probs[mask])
-        
-        # Patient prediction based on aggregation method
-        if aggregation_method == 'average':
-            # Use averaged probability with threshold
-            patient_pred = 1 if patient_prob >= 0.5 else 0
-        else:  # majority_vote
-            # Majority vote: most common prediction
-            rec_preds = all_preds[mask]
-            vote_counts = Counter(rec_preds)
-            patient_pred = vote_counts.most_common(1)[0][0]
         
         patient_labels.append(patient_label)
         patient_preds.append(patient_pred)
@@ -313,15 +373,11 @@ def train_model(
     num_epochs=50,
     learning_rate=0.001,
     device='cuda',
-    patience=15,
-    aggregation_method='majority_vote'
+    patience=15
 ):
     """
     Training loop with dynamic learning rate, early stopping based on validation patient-level AUC
-    Multi-GPU support with DataParallel and mixed precision training
-    
-    Args:
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
+    Multi-GPU support with DataParallel
     """
     # Multi-GPU setup
     if device.type == 'cuda' and torch.cuda.device_count() > 1:
@@ -333,9 +389,9 @@ def train_model(
     # Class weighting for imbalanced data
     # Data: 77% PD (label=1), 23% Control (label=0)
     # Weight minority class (Control) higher: [Control_weight, PD_weight] = [3.0, 1.0]
-    class_weights = torch.FloatTensor([3.25, 1.0]).to(device)
+    class_weights = torch.FloatTensor([3.0, 1.0]).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=5e-5)
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     
     # Learning rate scheduler: reduce LR when validation AUC plateaus
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -344,6 +400,7 @@ def train_model(
     
     best_val_auc = 0.0
     best_metrics = None
+    best_model_state = None
     epochs_without_improvement = 0
     
     # Track training history
@@ -363,7 +420,7 @@ def train_model(
         train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, device)
         
         # Validate
-        val_metrics = evaluate(model, val_loader, device, aggregation_method)
+        val_metrics = evaluate(model, val_loader, device)
         
         # Update learning rate based on validation patient AUC
         scheduler.step(val_metrics['patient_auc'])
@@ -388,20 +445,18 @@ def train_model(
         if val_metrics['patient_auc'] > best_val_auc:
             best_val_auc = val_metrics['patient_auc']
             best_metrics = val_metrics.copy()
-            epochs_without_improvement = 0
-            # Handle DataParallel wrapper
             if isinstance(model, nn.DataParallel):
-                best_model_state = model.module.state_dict().copy()
+                best_model_state = model.module.state_dict()
             else:
-                best_model_state = model.state_dict().copy()
-            if epoch > 0:
-                print(f"  ✓ New best model (Patient AUC: {best_val_auc:.4f})")
+                best_model_state = model.state_dict()
+            epochs_without_improvement = 0
+            print(f"  ✓ Best model saved (Patient AUC: {best_val_auc:.4f})")
         else:
             epochs_without_improvement += 1
         
         # Early stopping
         if epochs_without_improvement >= patience:
-            print(f"\nEarly stopping at epoch {epoch+1} (no improvement for {patience} epochs)")
+            print(f"\nEarly stopping triggered after {epoch+1} epochs (no improvement for {patience} epochs)")
             break
     
     # Load best model (handle DataParallel)
@@ -421,11 +476,15 @@ def run_5fold_cv(
     batch_size=32,
     num_epochs=100,
     learning_rate=0.001,
-    dropout=0.5,
+    img_size=224,
+    patch_size=16,
+    embed_dim=512,
+    depth=6,
+    num_heads=8,
+    dropout=0.1,
     patience=15,
     device='cuda',
-    output_dir='cnn_results',
-    aggregation_method='majority_vote'
+    output_dir='vit_results'
 ):
     """
     Run 5-fold cross-validation
@@ -438,11 +497,15 @@ def run_5fold_cv(
         batch_size: Batch size for training
         num_epochs: Maximum number of epochs
         learning_rate: Initial learning rate
+        img_size: Input image size (will be resized to this)
+        patch_size: Size of each patch
+        embed_dim: Embedding dimension
+        depth: Number of transformer blocks
+        num_heads: Number of attention heads
         dropout: Dropout probability
         patience: Early stopping patience
         device: Device to train on ('cuda' or 'cpu')
         output_dir: Directory to save results and plots
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
     
     Returns:
         DataFrame with results for all folds
@@ -453,6 +516,7 @@ def run_5fold_cv(
     os.makedirs(plots_dir, exist_ok=True)
     print(f"Results will be saved to: {output_dir}")
     print(f"Plots will be saved to: {plots_dir}")
+    
     # Load labels
     print("Loading labels...")
     label_df = pd.read_csv(label_csv, sep=';')
@@ -546,7 +610,16 @@ def run_5fold_cv(
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
         
         # Initialize model
-        model = CNNMelSpectrogramClassifier(num_classes=2, dropout=dropout)
+        model = ViTMelSpectrogramClassifier(
+            img_size=img_size,
+            patch_size=patch_size,
+            in_channels=1,
+            num_classes=2,
+            embed_dim=embed_dim,
+            depth=depth,
+            num_heads=num_heads,
+            dropout=dropout
+        )
         
         # Train
         trained_model, best_val_metrics, training_history = train_model(
@@ -556,8 +629,7 @@ def run_5fold_cv(
             num_epochs=num_epochs,
             learning_rate=learning_rate,
             device=device,
-            patience=patience,
-            aggregation_method=aggregation_method
+            patience=patience
         )
         
         # Save training history
@@ -607,7 +679,7 @@ def run_5fold_cv(
         plt.close()
         
         # Evaluate best model on TEST set
-        test_metrics = evaluate(trained_model, test_loader, device, aggregation_method)
+        test_metrics = evaluate(trained_model, test_loader, device)
         
         # Print summary for this fold
         print(f"\nFold {fold} - Best Model Performance:")
@@ -646,7 +718,7 @@ def run_5fold_cv(
     print(results_df.to_string(index=False))
     
     print("\n" + "="*80)
-    print(f"TEST SET - AVERAGE PERFORMANCE (Patient-Level {aggregation_method.replace('_', ' ').title()})")
+    print("TEST SET - AVERAGE PERFORMANCE (Patient-Level Majority Vote)")
     print("="*80)
     print(f"  AUC:         {results_df['test_patient_auc'].mean():.4f} ± {results_df['test_patient_auc'].std():.4f}")
     print(f"  Accuracy:    {results_df['test_patient_acc'].mean():.2f}% ± {results_df['test_patient_acc'].std():.2f}%")
@@ -660,16 +732,20 @@ def run_5fold_cv(
     # Create summary statistics file
     with open(f'{output_dir}/summary_statistics.txt', 'w') as f:
         f.write("="*80 + "\n")
-        f.write("5-FOLD CROSS-VALIDATION SUMMARY STATISTICS\n")
+        f.write("5-FOLD CROSS-VALIDATION SUMMARY STATISTICS - ViT MODEL\n")
         f.write("="*80 + "\n\n")
         
         f.write(f"Hyperparameters:\n")
         f.write(f"  Batch Size: {batch_size}\n")
         f.write(f"  Learning Rate: {learning_rate}\n")
+        f.write(f"  Image Size: {img_size}\n")
+        f.write(f"  Patch Size: {patch_size}\n")
+        f.write(f"  Embed Dim: {embed_dim}\n")
+        f.write(f"  Depth: {depth}\n")
+        f.write(f"  Num Heads: {num_heads}\n")
         f.write(f"  Dropout: {dropout}\n")
         f.write(f"  Max Epochs: {num_epochs}\n")
-        f.write(f"  Early Stopping Patience: {patience}\n")
-        f.write(f"  Aggregation Method: {aggregation_method}\n\n")
+        f.write(f"  Early Stopping Patience: {patience}\n\n")
         
         f.write("--- VALIDATION SET ---\n\n")
         f.write("Recording-Level:\n")
@@ -678,7 +754,7 @@ def run_5fold_cv(
         f.write(f"  Sensitivity: {results_df['val_rec_sens'].mean():.2f}% ± {results_df['val_rec_sens'].std():.2f}%\n")
         f.write(f"  Specificity: {results_df['val_rec_spec'].mean():.2f}% ± {results_df['val_rec_spec'].std():.2f}%\n\n")
         
-        f.write(f"Patient-Level ({aggregation_method.replace('_', ' ').title()}):\n")
+        f.write("Patient-Level (Majority Vote):\n")
         f.write(f"  AUC:         {results_df['val_patient_auc'].mean():.4f} ± {results_df['val_patient_auc'].std():.4f}\n")
         f.write(f"  Accuracy:    {results_df['val_patient_acc'].mean():.2f}% ± {results_df['val_patient_acc'].std():.2f}%\n")
         f.write(f"  Sensitivity: {results_df['val_patient_sens'].mean():.2f}% ± {results_df['val_patient_sens'].std():.2f}%\n")
@@ -691,7 +767,7 @@ def run_5fold_cv(
         f.write(f"  Sensitivity: {results_df['test_rec_sens'].mean():.2f}% ± {results_df['test_rec_sens'].std():.2f}%\n")
         f.write(f"  Specificity: {results_df['test_rec_spec'].mean():.2f}% ± {results_df['test_rec_spec'].std():.2f}%\n\n")
         
-        f.write(f"Patient-Level ({aggregation_method.replace('_', ' ').title()}):\n")
+        f.write("Patient-Level (Majority Vote):\n")
         f.write(f"  AUC:         {results_df['test_patient_auc'].mean():.4f} ± {results_df['test_patient_auc'].std():.4f}\n")
         f.write(f"  Accuracy:    {results_df['test_patient_acc'].mean():.2f}% ± {results_df['test_patient_acc'].std():.2f}%\n")
         f.write(f"  Sensitivity: {results_df['test_patient_sens'].mean():.2f}% ± {results_df['test_patient_sens'].std():.2f}%\n")
@@ -704,7 +780,7 @@ def run_5fold_cv(
     
     # Create comparison plots
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('5-Fold Cross-Validation Performance Summary', fontsize=16, fontweight='bold')
+    fig.suptitle('5-Fold Cross-Validation Performance Summary - ViT', fontsize=16, fontweight='bold')
     
     # Test AUC comparison (Recording vs Patient)
     folds = results_df['fold'].values
@@ -803,12 +879,16 @@ if __name__ == "__main__":
     VAL_TEST_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
     
     # Hyperparameters
-    BATCH_SIZE = 64  # Total batch size (splits across GPUs with DataParallel)
+    BATCH_SIZE = 32  # Total batch size (splits across GPUs with DataParallel)
     NUM_EPOCHS = 100
-    LEARNING_RATE = 0.001
-    DROPOUT = 0.35
-    PATIENCE = 20
-    AGGREGATION_METHOD = 'average'  # or 'majority_vote'
+    LEARNING_RATE = 0.0003  # Lower LR for ViT
+    IMG_SIZE = 224
+    PATCH_SIZE = 16
+    EMBED_DIM = 512
+    DEPTH = 6
+    NUM_HEADS = 8
+    DROPOUT = 0.1
+    PATIENCE = 15
     
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -828,9 +908,13 @@ if __name__ == "__main__":
         batch_size=BATCH_SIZE,
         num_epochs=NUM_EPOCHS,
         learning_rate=LEARNING_RATE,
+        img_size=IMG_SIZE,
+        patch_size=PATCH_SIZE,
+        embed_dim=EMBED_DIM,
+        depth=DEPTH,
+        num_heads=NUM_HEADS,
         dropout=DROPOUT,
         patience=PATIENCE,
         device=device,
-        output_dir='/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/CNN/V2',
-        aggregation_method=AGGREGATION_METHOD
+        output_dir='/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/ViT/V1'
     )
