@@ -50,7 +50,6 @@ def get_global_dt_limits(data_dir, valid_healthcodes):
     
     for json_file in json_files:
         try:
-            # ADDED: Filter by paired healthcodes
             filename = json_file.stem
             parts = filename.split('_')
             health_code = parts[0] if len(parts) > 0 else "unknown"
@@ -84,22 +83,77 @@ def get_global_dt_limits(data_dir, valid_healthcodes):
     
     return dt_min, dt_max
 
-def plot_speed_heatmap(df, patient_id, record_id, output_path, vmin, vmax):
-    """Create and save heatmap visualization with fixed color scale."""
+def get_global_coordinate_limits(data_dir, valid_healthcodes):
+    """Calculate global X and Y coordinate limits using percentiles to ignore outliers."""
+    json_files = list(data_dir.rglob("*tapping_results_json_TappingSamples.json"))
+    all_xs = []
+    all_ys = []
+    
+    for json_file in json_files:
+        try:
+            filename = json_file.stem
+            parts = filename.split('_')
+            health_code = parts[0] if len(parts) > 0 else "unknown"
+            
+            if health_code not in valid_healthcodes:
+                continue
+            
+            df = process_tapping_file(json_file)
+            if df is not None and len(df) > 0:
+                all_xs.extend(df['x'].values)
+                all_ys.extend(df['y'].values)
+        except:
+            continue
+    
+    if not all_xs or not all_ys:
+        return 0, 100, 0, 100  # fallback
+    
+    all_xs = np.array(all_xs)
+    all_ys = np.array(all_ys)
+    
+    # Use percentiles to crop outliers and maintain spatial resolution
+    x_min = np.percentile(all_xs, 1)      # 1st percentile
+    x_max = np.percentile(all_xs, 99)     # 99th percentile
+    y_min = np.percentile(all_ys, 1)      # 1st percentile
+    y_max = np.percentile(all_ys, 99)     # 99th percentile
+    
+    # Print statistics
+    print(f"Global coordinate statistics (1st-99th percentile):")
+    print(f"  X range: {x_min:.2f} to {x_max:.2f}")
+    print(f"  Y range: {y_min:.2f} to {y_max:.2f}")
+    
+    return x_min, x_max, y_min, y_max
+
+def plot_speed_heatmap(df, patient_id, record_id, output_path, x_min, x_max, y_min, y_max, dt_min, dt_max):
+    """Create and save cropped heatmap visualization with fixed coordinate and color scales."""
     if df is None or len(df) == 0:
         return False
 
-    plt.figure(figsize=(8, 6))
-    scatter = plt.scatter(df['x'], df['y'], c=df['dt'], cmap='plasma', 
+    fig, ax = plt.subplots(figsize=(8, 8))
+    scatter = ax.scatter(df['x'], df['y'], c=df['dt'], cmap='plasma', 
                          s=70, alpha=0.6, edgecolors='k', linewidth=0.5,
-                         vmin=vmin, vmax=vmax)  # Fixed scale
-    cbar = plt.colorbar(scatter, label="Reaction time (Δt in seconds)")
-    plt.title(f"Tap Duration Heatmap - Patient {patient_id}\nRecord {record_id}")
-    plt.xlabel("X coordinate")
-    plt.ylabel("Y coordinate")
-    plt.gca().invert_yaxis()
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=100)
+                         vmin=dt_min, vmax=dt_max)  # Fixed scale
+    
+    # Set fixed axis limits (crop to percentile range with small margin to avoid clipping)
+    x_margin = (x_max - x_min) * 0.085  # 8.5% margin
+    y_margin = (y_max - y_min) * 0.085  # 8.5% margin
+    ax.set_xlim(x_min - x_margin, x_max + x_margin)
+    ax.set_ylim(y_max + y_margin, y_min - y_margin)  # Inverted Y-axis with margin
+    
+    # Remove labels, ticks, and title for clean output
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+    ax.set_title("")
+    
+    # Remove spines (borders)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    
+    # Save without colorbar or any extra elements
+    plt.tight_layout(pad=0)
+    plt.savefig(output_path, dpi=100, bbox_inches='tight', pad_inches=0)
     plt.close()
     return True
 
@@ -126,9 +180,12 @@ def main():
         output_base_dir.mkdir(exist_ok=True, parents=True)
 
     
-    # Calculate global dt limits
-    print("Calculating global dt limits...")
-    vmin, vmax = get_global_dt_limits(data_dir, valid_healthcodes)
+    # Calculate global coordinate and dt limits
+    print("Calculating global coordinate and dt limits...")
+    x_min, x_max, y_min, y_max = get_global_coordinate_limits(data_dir, valid_healthcodes)
+    print()
+    dt_min, dt_max = get_global_dt_limits(data_dir, valid_healthcodes)
+    print()
 
     # Find all JSON tapping files
     json_files = list(data_dir.rglob("*tapping_results_json_TappingSamples.json"))
@@ -151,7 +208,7 @@ def main():
     total_errors = 0
 
     # Process only first 3 patients
-    for patient_id, files in patients.items(): #for patient_id, files in sorted(patients.items())[:3]:      #for all patients, replace by for patient_id, files in patients.items():
+    for patient_id, files in patients.items(): #for patient_id, files in sorted(patients.items())[:3]:     
         print(f"\nProcessing patient {patient_id} ({len(files)} total trials)...")
 
         selected_files = files  # Use all files
@@ -178,7 +235,7 @@ def main():
 
                 # Save heatmap
                 output_file = patient_dir / f"{idx:02d}_{record_id}_heatmap.png"
-                success = plot_speed_heatmap(df, patient_id, record_id, output_file, vmin, vmax)
+                success = plot_speed_heatmap(df, patient_id, record_id, output_file, x_min, x_max, y_min, y_max, dt_min, dt_max)
                 
                 if success:
                     print(f"  ✓ Trial {idx}: Saved {output_file.name}")
@@ -193,7 +250,10 @@ def main():
     print(f"\n{'='*50}")
     print(f"✓ Completed: {total_saved} heatmaps saved")
     print(f"✗ Errors: {total_errors}")
-    print(f"Color scale: {vmin:.6f} to {vmax:.6f} seconds")
+    print(f"Coordinate scales (1st-99th percentile):")
+    print(f"  X range: {x_min:.2f} to {x_max:.2f}")
+    print(f"  Y range: {y_min:.2f} to {y_max:.2f}")
+    print(f"  dt (reaction time) scale: {dt_min:.6f} to {dt_max:.6f} seconds")
     print(f"Output folder: {output_base_dir}")
 
 

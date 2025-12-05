@@ -4,7 +4,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from sklearn.preprocessing import StandardScaler
 
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_matrix, roc_curve
@@ -15,8 +15,8 @@ train_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/process
 valtest_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_val_test.csv"
 labels_path = "/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
 
-# lr ratio, missed taps, right, left, mean x, mean y...
-basic_features_path = "/mloscratch/users/clerget/data/csv/tapping_statistical_features.csv"
+# missed taps, right, left, mean x, mean y...
+basic_features_path = "/mloscratch/users/clerget/data/csv/tapping_statistical_features_sessions.csv"
 
 # fatigue slope, variability index, fluctuation index...
 advanced_features_path = "/mloscratch/users/clerget/data/csv/tapping_advanced_features_session.csv"
@@ -28,13 +28,11 @@ batch_size = 64
 
 # ===== Hyperparameter Grid for Tuning =====
 HYPERPARAMETER_GRID = {
-    'learning_rate': [1e-4, 1e-3, 1e-2], #try bigger learning rates, dynamic learning rates 
-    'weight_decay': [1e-4, 1e-3, 5e-3], #L2 reg 
+    'learning_rate': [0.001],
+    'weight_decay': [1e-4, 1e-3, 5e-3],
     'dropout_rate': [0.2, 0.5, 0.7],
     'hidden_dim_1': [32, 64, 128],
     'hidden_dim_2': [16, 32, 64],
-    #'label_smoothing': [0.0, 0.1, 0.2],
-    #'batch_size': [32, 64, 128]
 }
 
 # ===== Define MLP Model =====
@@ -54,10 +52,11 @@ class MLP(nn.Module):
             nn.Linear(16, 2)  # Output 2 classes for CrossEntropyLoss
         )
     
-    def forward(self, x): #takes input tensor x and passes it through the network layers defined in __init__
+    def forward(self, x):
         # Return raw logits for use with CrossEntropyLoss
         return self.net(x)
-    
+
+
 def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='mean'):
     """Aggregate trial-level predictions to patient-level predictions."""
     
@@ -71,7 +70,7 @@ def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_lab
     if aggregation_method == 'mean':
         patient_preds = results_df.groupby('healthCode').agg({
             'pred_proba': 'mean',
-            'label': 'first'  # Label is same for all trials of same patient
+            'label': 'first'
         }).reset_index()
         patient_preds['pred_binary'] = (patient_preds['pred_proba'] > 0.5).astype(int)
     
@@ -92,8 +91,45 @@ def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_lab
     return patient_preds
 
 
-def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparams=None): 
+def create_balanced_sampler(y_train):
+    """
+    Create a WeightedRandomSampler for 50-50 balanced batch sampling at SESSION level.
+    
+    Uses the ratio num_class_0 / num_class_1 as PD weight to achieve 50-50 split:
+    - Healthy sessions weight: 1.0
+    - PD sessions weight: num_healthy / num_pd
+    - Result: ~50% Healthy, ~50% PD in each batch
+    
+    Math: Expected batch ratio = n_healthy × 1.0 / (n_healthy × 1.0 + n_pd × (n_healthy/n_pd))
+                               = n_healthy / (n_healthy + n_healthy) 
+                               = 50-50 split
+    """
+    
+    num_class_0 = np.sum(y_train == 0)  # Healthy sessions
+    num_class_1 = np.sum(y_train == 1)  # PD sessions
+    
+    # Calculate weight factor for 50-50 balance
+    pd_weight_factor = num_class_0 / num_class_1
+    weights = np.where(y_train == 0, 1.0, pd_weight_factor)
+    
+    print(f"  Using 50-50 balanced sampler:")
+    print(f"    - Healthy sessions: {num_class_0} (weight=1.0)")
+    print(f"    - PD sessions: {num_class_1} (weight={pd_weight_factor:.4f})")
+    print(f"    - Expected batch ratio: ~50% Healthy, ~50% PD")
+    
+    sampler = WeightedRandomSampler(
+        weights=weights,
+        num_samples=len(weights),
+        replacement=True
+    )
+    
+    return sampler # is an object that controls how samples are selected from the training dataset 
+
+
+def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparams=None, use_scheduler=True, use_balanced_sampler=True):
     print(f"\n Model: {model_name} | Fold: {fold}")
+    print(f" ├─ Learning Rate Scheduler: {'✓ Enabled' if use_scheduler else '✗ Disabled'}")
+    print(f" └─ Balanced Sampler (50-50 Healthy/PD): {'✓ Enabled' if use_balanced_sampler else '✗ Disabled'}")
     
     # Use default hyperparameters if not provided
     if hyperparams is None:
@@ -103,8 +139,6 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
             'dropout_rate': 0.5,
             'hidden_dim_1': 64,
             'hidden_dim_2': 32,
-            #'label_smoothing': 0.1,
-            #'batch_size': 64
         }
     
     # Extract hyperparameters
@@ -113,12 +147,10 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     dropout_rate = hyperparams.get('dropout_rate', 0.5)
     hidden_dim_1 = hyperparams.get('hidden_dim_1', 64)
     hidden_dim_2 = hyperparams.get('hidden_dim_2', 32)
-    #label_smoothing = hyperparams.get('label_smoothing', 0.1)
-    #batch_sz = hyperparams.get('batch_size', 64)
     
     if fold == 0:
         print(f"Hyperparameters: lr={learning_rate}, wd={weight_decay}, dropout={dropout_rate}, "
-              f"h1={hidden_dim_1}, h2={hidden_dim_2}, label_smooth={label_smoothing}, batch_size={batch_sz}")
+              f"h1={hidden_dim_1}, h2={hidden_dim_2}")
     
     # Load labels
     labels_df = pd.read_csv(labels_path)
@@ -129,7 +161,7 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     
     # Drop modality if exists
     if "modality" in data_df.columns:
-        data_df = data_df.drop(columns=["modality"])   
+        data_df = data_df.drop(columns=["modality"])
         
     # if 1 trial, std is NaN --> fill NaN with mean
     numeric_cols = data_df.select_dtypes(include=[np.number]).columns
@@ -166,36 +198,37 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     y_val = val_df["label_PD"].values.astype(np.float32)
     y_test = test_df["label_PD"].values.astype(np.float32)
     
-    # Calculate class weights to handle imbalance and penalize incorrect predictions
-    # More weight on the minority class (PD=1) to avoid overpredicting 0s
+    # Count class distribution for info
     num_class_0 = np.sum(y_train == 0)
     num_class_1 = np.sum(y_train == 1)
-    total_samples = len(y_train)
-    
-    # Weight inversely proportional to class frequency
-    # This penalizes misclassifying the minority class more heavily
-    class_weight = total_samples / (2 * num_class_1) if num_class_1 > 0 else 1.0
     
     print(f"Class distribution - Healthy (0): {num_class_0}, PD (1): {num_class_1}")
-    print(f"Class weights - Healthy (0): 1.0, PD (1): {class_weight:.4f}")
+    print(f"Note: Using 50-50 balanced sampler, so no additional class weights needed")
     
     # Convert to tensors
     X_train_t = torch.from_numpy(X_train)
     X_val_t = torch.from_numpy(X_val)
     X_test_t = torch.from_numpy(X_test)
     
-    y_train_t = torch.from_numpy(y_train).long()  # Convert to long for CrossEntropyLoss
+    y_train_t = torch.from_numpy(y_train).long()
     y_val_t = torch.from_numpy(y_val).long()
     y_test_t = torch.from_numpy(y_test).long()
     
-    # DataLoaders
+    # Create datasets
     train_dataset = TensorDataset(X_train_t, y_train_t)
     val_dataset = TensorDataset(X_val_t, y_val_t)
     test_dataset = TensorDataset(X_test_t, y_test_t)
     
-    train_loader = DataLoader(train_dataset, batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size, shuffle=False)
-    test_loader = DataLoader(test_dataset, batch_size, shuffle=False)
+    # ===== UPGRADE 1: Create balanced sampler for training =====
+    if use_balanced_sampler:
+        print("\n[UPGRADE 1] Per-batch 50-50 balancing of Healthy/PD sessions:")
+        train_sampler = create_balanced_sampler(y_train)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, shuffle=False)
+    else:
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
     # Initialize model
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -203,16 +236,35 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     model = MLP(len(feature_cols), hidden_dim_1=hidden_dim_1, hidden_dim_2=hidden_dim_2, 
                 dropout_rate=dropout_rate).to(device)
     
-    # Create weighted CrossEntropyLoss with class weights
-    class_weights = torch.FloatTensor([1.0, class_weight]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    # Use standard CrossEntropyLoss (no class weights since using 50-50 balanced sampler)
+    criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    
+    # ===== UPGRADE 2: Dynamic Learning Rate Scheduler =====
+    if use_scheduler:
+        print("\n[UPGRADE 2] Dynamic Learning Rate Scheduler (ReduceLROnPlateau):")
+        print("  ├─ Mode: max (increase LR when metric improves)")
+        print("  ├─ Factor: 0.5 (reduce LR by 50% when plateau)")
+        print("  ├─ Patience: 5 epochs")
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, 
+            mode='max',  # Maximize validation AUC
+            factor=0.5,  # Reduce LR by 50%
+            patience=5,  # Wait 5 epochs before reducing
+            min_lr=1e-6  # Don't go below this LR
+        )
+    else:
+        scheduler = None
     
     # Training loop
     num_epochs = 50
     best_val_auc = 0.0
-    patience = 10
+    patience = 15
     patience_counter = 0
+    
+    train_losses = []
+    val_aucs = []
+    learning_rates = []
     
     for epoch in range(num_epochs):
         # Train
@@ -230,6 +282,7 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
             train_loss += loss.item()
         
         train_loss /= len(train_loader)
+        train_losses.append(train_loss)
         
         # Validation
         model.eval()
@@ -239,22 +292,36 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
             for X_batch, y_batch in val_loader:
                 X_batch, y_batch = X_batch.to(device), y_batch.to(device)
                 y_logits = model(X_batch)
-                y_proba = torch.softmax(y_logits, dim=1)  # Get probabilities
-                val_preds_proba.extend(y_proba[:, 1].cpu().numpy().tolist())  # Probability of class 1
+                y_proba = torch.softmax(y_logits, dim=1)
+                val_preds_proba.extend(y_proba[:, 1].cpu().numpy().tolist())
                 val_labels.extend(y_batch.cpu().numpy().tolist())
         
         val_auc = roc_auc_score(val_labels, val_preds_proba)
+        val_aucs.append(val_auc)
+        
+        # Get current learning rate
+        current_lr = optimizer.param_groups[0]['lr']
+        learning_rates.append(current_lr)
+        
+        # ===== Step scheduler =====
+        if scheduler is not None:
+            scheduler.step(val_auc)
         
         # Early stopping based on AUC
         if val_auc > best_val_auc:
             best_val_auc = val_auc
             patience_counter = 0
+            best_model_state = model.state_dict().copy()  # Save best model based on VAL
         else:
             patience_counter += 1
             if patience_counter >= patience:
+                print(f"  Early stopping at epoch {epoch}")
                 break
     
-    # Test evaluation - Get predictions only
+    # Load best model before test evaluation
+    model.load_state_dict(best_model_state)
+    
+    # Test evaluation
     model.eval()
     test_preds_proba = []
     test_preds_binary = []
@@ -264,78 +331,23 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
         for X_batch, y_batch in test_loader:
             X_batch = X_batch.to(device)
             y_logits = model(X_batch)
-            y_proba = torch.softmax(y_logits, dim=1)  # Get probabilities
-            y_pred_proba_class1 = y_proba[:, 1]  # Probability of class 1
+            y_proba = torch.softmax(y_logits, dim=1)
+            y_pred_proba_class1 = y_proba[:, 1]
             test_preds_proba.extend(y_pred_proba_class1.cpu().numpy().tolist())
             test_preds_binary.extend((y_pred_proba_class1 > 0.5).cpu().numpy().tolist())
             test_labels.extend(y_batch.numpy().tolist())
     
-    # Aggregate to patient-level ONLY
+    # Aggregate to patient-level
     patient_preds = aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='mean')
     
     patient_accuracy = accuracy_score(patient_preds['label'], patient_preds['pred_binary'])
     patient_f1 = f1_score(patient_preds['label'], patient_preds['pred_binary'])
     patient_auc = roc_auc_score(patient_preds['label'], patient_preds['pred_proba'])
     
-    print(f"Patient-level Accuracy: {patient_accuracy:.4f}")
+    print(f"\nPatient-level Accuracy: {patient_accuracy:.4f}")
     print(f"Patient-level F1-Score: {patient_f1:.4f}")
     print(f"Patient-level AUC-ROC:  {patient_auc:.4f}")
     
-    # ===== Generate Per-Fold Visualizations =====
-    fig, axes = plt.subplots(2, 2, figsize=(14, 11))
-    fig.suptitle(f'{model_name} - Fold {fold} Results', fontsize=16, fontweight='bold')
-    
-    # 1. Confusion Matrix
-    cm = confusion_matrix(patient_preds['label'], patient_preds['pred_binary'])
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[0, 0], cbar=False, 
-                xticklabels=['Healthy', 'PD'], yticklabels=['Healthy', 'PD'])
-    axes[0, 0].set_title(f'Confusion Matrix (Accuracy: {patient_accuracy:.4f})', fontweight='bold')
-    axes[0, 0].set_xlabel('Predicted')
-    axes[0, 0].set_ylabel('Actual')
-    
-    # 2. ROC Curve
-    fpr, tpr, _ = roc_curve(patient_preds['label'], patient_preds['pred_proba'])
-    axes[0, 1].plot(fpr, tpr, linewidth=2.5, label=f'AUC = {patient_auc:.4f}', color='#1f77b4')
-    axes[0, 1].plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random')
-    axes[0, 1].set_xlabel('False Positive Rate', fontsize=11)
-    axes[0, 1].set_ylabel('True Positive Rate', fontsize=11)
-    axes[0, 1].set_title('ROC Curve', fontweight='bold')
-    axes[0, 1].legend(fontsize=10)
-    axes[0, 1].grid(True, alpha=0.3)
-    
-    # 3. Metrics Bar Plot
-    metrics = ['Accuracy', 'F1-Score', 'AUC-ROC']
-    values = [patient_accuracy, patient_f1, patient_auc]
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
-    axes[1, 0].bar(metrics, values, color=colors, alpha=0.7, edgecolor='black', linewidth=1.5)
-    axes[1, 0].set_ylabel('Score', fontsize=11)
-    axes[1, 0].set_title('Performance Metrics', fontweight='bold')
-    axes[1, 0].set_ylim([0, 1])
-    for i, v in enumerate(values):
-        axes[1, 0].text(i, v + 0.02, f'{v:.4f}', ha='center', fontweight='bold', fontsize=10)
-    axes[1, 0].grid(True, axis='y', alpha=0.3)
-    
-    # 4. Prediction Distribution
-    axes[1, 1].hist(patient_preds[patient_preds['label'] == 0]['pred_proba'], bins=15, alpha=0.6, label='Healthy', color='blue')
-    axes[1, 1].hist(patient_preds[patient_preds['label'] == 1]['pred_proba'], bins=15, alpha=0.6, label='PD', color='red')
-    axes[1, 1].axvline(0.5, color='black', linestyle='--', linewidth=2, label='Decision Threshold')
-    axes[1, 1].set_xlabel('Predicted Probability', fontsize=11)
-    axes[1, 1].set_ylabel('Frequency', fontsize=11)
-    axes[1, 1].set_title('Prediction Distribution', fontweight='bold')
-    axes[1, 1].legend(fontsize=10)
-    axes[1, 1].grid(True, alpha=0.3, axis='y')
-    
-    plt.tight_layout()
-    
-    # Save figure
-    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
-    fig_path = output_dir / f'{model_prefix}_{model_name.replace(" ", "_")}_fold{fold}_results.png'
-    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
-    print(f"✓ Fold visualization saved: {fig_path}")
-    
-    plt.close()
-    
-    # Return data (visualization will be done later for mean CV results)
     return {
         'model': model_name,
         'fold': fold,
@@ -345,8 +357,9 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
         'num_patients': len(patient_preds)
     }
 
+
 def create_cv_visualization(model_name, accuracy, f1_score, auc, accuracy_std, f1_score_std, auc_std, model_prefix):
-    """Create visualization for CV mean results (no confusion matrix or ROC curve since we don't have raw predictions)"""
+    """Create visualization for CV mean results"""
     
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle(f'{model_name} - Cross-Validation Results (Mean ± Std across 5 Folds)', 
@@ -365,11 +378,10 @@ def create_cv_visualization(model_name, accuracy, f1_score, auc, accuracy_std, f
     axes[0].set_ylim([0, 1])
     axes[0].grid(True, axis='y', alpha=0.3)
     
-    # Add value labels on bars
     for i, (v, s) in enumerate(zip(values, stds)):
         axes[0].text(i, v + s + 0.03, f'{v:.4f}\n±{s:.4f}', ha='center', fontweight='bold', fontsize=10)
     
-    # 2. Comparison Table as Text
+    # 2. Comparison Table
     axes[1].axis('off')
     table_data = [
         ['Metric', 'Mean', 'Std Dev'],
@@ -384,7 +396,6 @@ def create_cv_visualization(model_name, accuracy, f1_score, auc, accuracy_std, f
     table.set_fontsize(11)
     table.scale(1, 2.5)
     
-    # Style header row
     for i in range(3):
         table[(0, i)].set_facecolor('#4472C4')
         table[(0, i)].set_text_props(weight='bold', color='white')
@@ -393,7 +404,6 @@ def create_cv_visualization(model_name, accuracy, f1_score, auc, accuracy_std, f
     
     plt.tight_layout()
     
-    # Save figure
     output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
     fig_path = output_dir / f'{model_prefix}_{model_name.replace(" ", "_")}_cv_results.png'
     plt.savefig(fig_path, dpi=300, bbox_inches='tight')
@@ -401,62 +411,6 @@ def create_cv_visualization(model_name, accuracy, f1_score, auc, accuracy_std, f
     
     plt.close()
 
-# ===== Hyperparameter Tuning =====
-def hyperparameter_search(features_df, model_name, model_prefix, num_folds=5, num_trials=10):
-    """Random search for hyperparameters using validation fold"""
-    print(f"\n{'='*70}")
-    print(f"HYPERPARAMETER SEARCH: {model_name}")
-    print(f"{'='*70}")
-    
-    import itertools
-    import random
-    
-    # Generate random combinations
-    param_names = list(HYPERPARAMETER_GRID.keys())
-    param_values = list(HYPERPARAMETER_GRID.values())
-    
-    best_auc = 0.0
-    best_hyperparams = None
-    search_results = []
-    
-    for trial in range(min(num_trials, 50)):  # Limit to 50 trials
-        # Random hyperparameter combination
-        hyperparams = {}
-        for param_name, param_list in HYPERPARAMETER_GRID.items():
-            hyperparams[param_name] = random.choice(param_list)
-        
-        # Evaluate on fold 0 only (for speed)
-        result = train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparams=hyperparams)
-        fold_auc = result['auc']
-        
-        search_results.append({
-            'trial': trial,
-            'auc': fold_auc,
-            'hyperparams': hyperparams.copy()
-        })
-        
-        print(f"Trial {trial+1}/{num_trials} - AUC: {fold_auc:.4f} - "
-              f"lr={hyperparams['learning_rate']:.0e}, wd={hyperparams['weight_decay']:.0e}, "
-              f"dropout={hyperparams['dropout_rate']:.1f}")
-        
-        if fold_auc > best_auc:
-            best_auc = fold_auc
-            best_hyperparams = hyperparams.copy()
-            print(f"  ✓ New best AUC: {best_auc:.4f}")
-    
-    print(f"\n{'='*70}")
-    print(f"Best Hyperparameters for {model_name}:")
-    print(f"  Learning Rate: {best_hyperparams['learning_rate']}")
-    print(f"  Weight Decay: {best_hyperparams['weight_decay']}")
-    print(f"  Dropout Rate: {best_hyperparams['dropout_rate']}")
-    print(f"  Hidden Dim 1: {best_hyperparams['hidden_dim_1']}")
-    print(f"  Hidden Dim 2: {best_hyperparams['hidden_dim_2']}")
-    #print(f"  Label Smoothing: {best_hyperparams['label_smoothing']}")
-    #print(f"  Batch Size: {best_hyperparams['batch_size']}")
-    print(f"Best AUC (Fold 0): {best_auc:.4f}")
-    print(f"{'='*70}\n")
-    
-    return best_hyperparams, search_results
 
 # ===== Main =====
 if __name__ == "__main__":
@@ -470,38 +424,27 @@ if __name__ == "__main__":
     print(f"Advanced features shape: {advanced_features.shape}")
     print(f"Combined features shape: {combined_features.shape}\n")
     
-    # ===== STEP 1: Hyperparameter Search (Optional - set to False to skip) =====
-    PERFORM_HYPERPARAMETER_SEARCH = False  # Set to True to tune hyperparameters
-    
-    if PERFORM_HYPERPARAMETER_SEARCH:
-        print("\n" + "="*70)
-        print("STARTING HYPERPARAMETER SEARCH")
-        print("="*70)
-        
-        best_hp_basic, _ = hyperparameter_search(basic_features, "Basic Features", "01_basic", num_trials=10)
-        best_hp_advanced, _ = hyperparameter_search(advanced_features, "Advanced Features", "02_advanced", num_trials=10)
-        best_hp_combined, _ = hyperparameter_search(combined_features, "Combined Features", "03_combined", num_trials=10)
-    else:
-        # Use default hyperparameters
-        best_hp_basic = {
-            'learning_rate': 1e-3,
-            'weight_decay': 1e-3,
-            'dropout_rate': 0.5,
-            'hidden_dim_1': 64,
-            'hidden_dim_2': 32,
-            'label_smoothing': 0.1,
-            'batch_size': 64
-        }
-        best_hp_advanced = best_hp_basic.copy()
-        best_hp_combined = best_hp_basic.copy()
-    
-    # ===== STEP 2: Cross-Validation with Best Hyperparameters =====
     print("\n" + "="*70)
-    print("CROSS-VALIDATION WITH BEST HYPERPARAMETERS")
+    print("CROSS-VALIDATION WITH UPGRADED MLP")
+    print("="*70)
+    print("\n[UPGRADES ENABLED]")
+    print("  1. Learning Rate Scheduler (ReduceLROnPlateau)")
+    print("  2. Per-batch Undersampling of PD Sessions (WeightedRandomSampler)")
     print("="*70)
     
     # Store results for all folds
     all_results = []
+    
+    # Hyperparameters (same as baseline)
+    best_hp_basic = {
+        'learning_rate': 1e-3,
+        'weight_decay': 1e-3,
+        'dropout_rate': 0.5,
+        'hidden_dim_1': 64,
+        'hidden_dim_2': 32,
+    }
+    best_hp_advanced = best_hp_basic.copy()
+    best_hp_combined = best_hp_basic.copy()
     
     # Loop through all 5 folds
     for fold in range(NUM_FOLDS):
@@ -509,11 +452,20 @@ if __name__ == "__main__":
         print(f"FOLD {fold}/{NUM_FOLDS - 1}")
         print(f"{'='*70}")
         
-        # Train all three models for this fold with best hyperparameters
+        # Train all three models for this fold with upgrades enabled
         fold_results = []
-        fold_results.append(train_and_evaluate(basic_features, "Basic Features", "01_basic", fold=fold, hyperparams=best_hp_basic))
-        fold_results.append(train_and_evaluate(advanced_features, "Advanced Features", "02_advanced", fold=fold, hyperparams=best_hp_advanced))
-        fold_results.append(train_and_evaluate(combined_features, "Combined Features", "03_combined", fold=fold, hyperparams=best_hp_combined))
+        fold_results.append(train_and_evaluate(
+            basic_features, "Basic Features", "01_basic", fold=fold, 
+            hyperparams=best_hp_basic, use_scheduler=True, use_balanced_sampler=True
+        ))
+        fold_results.append(train_and_evaluate(
+            advanced_features, "Advanced Features", "02_advanced", fold=fold, 
+            hyperparams=best_hp_advanced, use_scheduler=True, use_balanced_sampler=True
+        ))
+        fold_results.append(train_and_evaluate(
+            combined_features, "Combined Features", "03_combined", fold=fold, 
+            hyperparams=best_hp_combined, use_scheduler=True, use_balanced_sampler=True
+        ))
         
         all_results.extend(fold_results)
     
@@ -555,20 +507,21 @@ if __name__ == "__main__":
         print(f"  F1-Score:  {mean_f1:.4f} ± {std_f1:.4f}")
         print(f"  AUC-ROC:   {mean_auc:.4f} ± {std_auc:.4f}")
     
-    # Combine individual fold results with mean results
+    # Combine results
     results_df['accuracy_std'] = ''
     results_df['f1_score_std'] = ''
     results_df['auc_std'] = ''
     
     final_results_df = pd.concat([results_df, pd.DataFrame(mean_data)], ignore_index=True)
     
-    # Save ONE CSV per model (with all folds + mean)
+    # Save results
     output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
+    output_dir.mkdir(exist_ok=True, parents=True)
     
     model_prefixes = {
-        'Basic Features': '01_basic',
-        'Advanced Features': '02_advanced',
-        'Combined Features': '03_combined'
+        'Basic Features': '01_basic_upgraded',
+        'Advanced Features': '02_advanced_upgraded',
+        'Combined Features': '03_combined_upgraded'
     }
     
     for model_name, prefix in model_prefixes.items():
@@ -577,12 +530,12 @@ if __name__ == "__main__":
         model_df.to_csv(csv_path, index=False)
         print(f"✓ Saved: {csv_path}")
     
-    # Also save all models together in one file
-    all_csv = output_dir / 'cv_results_all_models.csv'
+    # Save all models
+    all_csv = output_dir / 'cv_results_all_models_upgraded.csv'
     final_results_df.to_csv(all_csv, index=False)
     print(f"\n✓ All models saved to: {all_csv}")
     
-    # Find best model based on mean AUC
+    # Find best model
     mean_results_df = final_results_df[final_results_df['fold'] == 'MEAN']
     best_idx = mean_results_df['auc'].idxmax()
     best_model = mean_results_df.loc[best_idx, 'model']
@@ -590,18 +543,11 @@ if __name__ == "__main__":
     print(f"\n✓ Best model: {best_model} (AUC: {best_auc:.4f})")
     
     print("\n" + "="*70)
-    print("Output Files:")
-    print("  - 01_basic_Basic_Features_cv_results.csv")
-    print("  - 02_advanced_Advanced_Features_cv_results.csv")
-    print("  - 03_combined_Combined_Features_cv_results.csv")
-    print("  - cv_results_all_models.csv (all models combined)")
+    print("✓ Upgraded MLP Training Complete!")
     print("="*70)
     
-    # Generate visualizations for CV mean results
-    print("\n" + "="*70)
-    print("Generating CV Mean Visualizations...")
-    print("="*70)
-    
+    # Generate visualizations
+    print("\nGenerating CV Mean Visualizations...")
     for model_name, prefix in model_prefixes.items():
         mean_row = mean_results_df[mean_results_df['model'] == model_name].iloc[0]
         create_cv_visualization(
@@ -614,7 +560,3 @@ if __name__ == "__main__":
             auc_std=mean_row['auc_std'],
             model_prefix=prefix
         )
-    
-    print("\n" + "="*70)
-    print("✓ Cross-Validation Complete!")
-    print("="*70)

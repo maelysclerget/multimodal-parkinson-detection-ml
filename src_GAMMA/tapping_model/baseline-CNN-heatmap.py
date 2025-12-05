@@ -6,7 +6,7 @@ from PIL import Image
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from torchvision import transforms
 from sklearn.preprocessing import StandardScaler
 
@@ -164,6 +164,41 @@ class CNN2D_Heatmap(nn.Module):
         return x
 
 
+def create_balanced_sampler(y_train):
+    """
+    Create a WeightedRandomSampler for 50-50 balanced batch sampling at SESSION level.
+    
+    Uses the ratio num_class_0 / num_class_1 as PD weight to achieve 50-50 split:
+    - Healthy sessions weight: 1.0
+    - PD sessions weight: num_healthy / num_pd
+    - Result: ~50% Healthy, ~50% PD in each batch
+    
+    Math: Expected batch ratio = n_healthy × 1.0 / (n_healthy × 1.0 + n_pd × (n_healthy/n_pd))
+                               = n_healthy / (n_healthy + n_healthy) 
+                               = 50-50 split
+    """
+    
+    num_class_0 = np.sum(y_train == 0)  # Healthy sessions
+    num_class_1 = np.sum(y_train == 1)  # PD sessions
+    
+    # Calculate weight factor for 50-50 balance
+    pd_weight_factor = num_class_0 / num_class_1
+    weights = np.where(y_train == 0, 1.0, pd_weight_factor)
+    
+    print(f"  Using 50-50 balanced sampler:")
+    print(f"    - Healthy sessions: {num_class_0} (weight=1.0)")
+    print(f"    - PD sessions: {num_class_1} (weight={pd_weight_factor:.4f})")
+    print(f"    - Expected batch ratio: ~50% Healthy, ~50% PD")
+    
+    sampler = WeightedRandomSampler(
+        weights=weights,
+        num_samples=len(weights),
+        replacement=True
+    )
+    
+    return sampler
+
+
 def aggregate_predictions(healthcodes, pred_probas, pred_binaries, labels, aggregation_method='mean'):
     """Aggregate trial-level predictions to patient-level predictions"""
     
@@ -198,8 +233,9 @@ def aggregate_predictions(healthcodes, pred_probas, pred_binaries, labels, aggre
     return patient_preds
 
 
-def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, fold=0):
+def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, fold=0, use_balanced_sampler=True):
     print(f"\n Model: {model_name} | Fold: {fold}")
+    print(f" └─ Balanced Sampler (50-50 Healthy/PD): {'✓ Enabled' if use_balanced_sampler else '✗ Disabled'}")
     
     # Get split info for this fold
     train_hc = split_info[(split_info["fold_iteration"] == fold) & (split_info["subset"] == "train")]["healthCode"].unique()
@@ -218,10 +254,9 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
     num_class_0 = np.sum(y_train == 0)
     num_class_1 = np.sum(y_train == 1)
     total_samples = len(y_train)
-    class_weight = total_samples / (2 * num_class_1) if num_class_1 > 0 else 1.0
     
     print(f"Class distribution - Healthy (0): {num_class_0}, PD (1): {num_class_1}")
-    print(f"Class weights - Healthy (0): 1.0, PD (1): {class_weight:.4f}")
+    print(f"Using balanced sampler → No class weights needed (equal weight for both classes)")
     
     # Create datasets
     train_dataset = HeatmapDataset(
@@ -248,8 +283,14 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
         transform=image_transform
     )
     
-    # DataLoaders
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    # ===== Create balanced sampler for training =====
+    if use_balanced_sampler:
+        print("\n[BALANCED SAMPLING] Per-batch 50-50 balancing of Healthy/PD sessions:")
+        train_sampler = create_balanced_sampler(y_train)
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, shuffle=False)
+    else:
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     
@@ -260,8 +301,8 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
     model = CNN2D_Heatmap(num_channels=32, dropout_rate=0.5).to(device)
     
     # Loss and optimizer
-    class_weights_tensor = torch.FloatTensor([1.0, class_weight]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights_tensor, label_smoothing=0.1)
+    # Since balanced sampler ensures 50-50 split, use equal weights for both classes
+    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-3)
     
     # Training loop
@@ -283,7 +324,7 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
             loss.backward()
             optimizer.step()
             
-            train_loss += loss.item()
+            train_loss += loss.detach().item()
         
         train_loss /= len(train_loader)
         

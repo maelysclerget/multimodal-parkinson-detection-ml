@@ -74,7 +74,6 @@ def extract_statistical_features(json_file_path):
     
     left_count = sum(1 for b in buttons if "left" in str(b).lower())
     right_count = sum(1 for b in buttons if "right" in str(b).lower())
-    lr_ratio = left_count / right_count if right_count > 0 else 0
     missed_taps = len(buttons) - left_count - right_count
     mean_x = np.nanmean(xs)
     mean_y = np.nanmean(ys)
@@ -84,9 +83,6 @@ def extract_statistical_features(json_file_path):
     features = {
         'mean_dt': mean_dt,
         'std_dt': std_dt,
-        'lr_ratio': lr_ratio,
-        'left_count': left_count,
-        'right_count': right_count,
         'total_taps': len(buttons),
         'mean_x': mean_x,
         'mean_y': mean_y,
