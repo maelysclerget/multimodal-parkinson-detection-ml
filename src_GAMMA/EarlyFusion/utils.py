@@ -8,8 +8,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.utils import class_weight
 import os
 from pathlib import Path
-from src_GAMMA.EarlyFusion.EarlyFusionCNN import EarlyFusionCNN
-from src_GAMMA.EarlyFusion.EarlyFusionMLP import EarlyFusionMLP
+from EarlyFusion.EarlyFusionCNN import EarlyFusionCNN
+from EarlyFusion.EarlyFusionMLP import EarlyFusionMLP
 
 
 def cross_validation_5fold_early_fusion(
