@@ -77,9 +77,16 @@ class TemporalBlock(nn.Module):
                                 self.conv2, self.relu2, self.dropout2)
         self.downsample = nn.Conv1d(n_inputs, n_outputs, 1) if n_inputs != n_outputs else None
         self.relu = nn.ReLU()
+        
+        # Store padding for output size adjustment
+        self.padding = padding
     
     def forward(self, x):
         out = self.net(x)
+        # Crop output to match input size (remove extra padding from dilation)
+        if out.size(2) != x.size(2):
+            out = out[:, :, :x.size(2)]
+        
         res = x if self.downsample is None else self.downsample(x)
         return self.relu(out + res)
 
@@ -787,7 +794,7 @@ if __name__ == "__main__":
     KERNEL_SIZE = 3
     DROPOUT = 0.2
     PATIENCE = 15
-    MAX_LENGTH = 441000  # 10 seconds at 44100 Hz
+    MAX_LENGTH = 445000  # 10 seconds at 44100 Hz
     
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

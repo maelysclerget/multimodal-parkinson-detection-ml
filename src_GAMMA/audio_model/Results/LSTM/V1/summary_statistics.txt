@@ -1,0 +1,50 @@
+================================================================================
+5-FOLD CROSS-VALIDATION SUMMARY STATISTICS - LSTM WAVEFORM MODEL
+================================================================================
+
+Hyperparameters:
+  Batch Size: 32
+  Learning Rate: 0.001
+  Hidden Size: 128
+  Num Layers: 2
+  Dropout: 0.3
+  Max Epochs: 100
+  Early Stopping Patience: 15
+  Max Waveform Length: 445000 samples
+
+--- VALIDATION SET ---
+
+Recording-Level:
+  AUC:         0.6725 ± 0.0859
+  Accuracy:    60.91% ± 6.28%
+  Sensitivity: 59.90% ± 8.26%
+  Specificity: 66.00% ± 6.46%
+
+Patient-Level (Majority Vote):
+  AUC:         0.6839 ± 0.0514
+  Accuracy:    62.03% ± 4.83%
+  Sensitivity: 56.26% ± 7.72%
+  Specificity: 69.57% ± 8.56%
+
+--- TEST SET (PRIMARY RESULTS) ---
+
+Recording-Level:
+  AUC:         0.6434 ± 0.0564
+  Accuracy:    59.16% ± 7.22%
+  Sensitivity: 58.12% ± 10.80%
+  Specificity: 62.80% ± 9.74%
+
+Patient-Level (Majority Vote):
+  AUC:         0.6203 ± 0.0547
+  Accuracy:    58.29% ± 5.33%
+  Sensitivity: 52.70% ± 12.10%
+  Specificity: 65.65% ± 8.33%
+
+
+Per-Fold Results:
+ fold  num_train_patients  num_val_patients  val_rec_auc  val_rec_acc  val_rec_sens  val_rec_spec  val_patient_auc  val_patient_acc  val_patient_sens  val_patient_spec  num_test_patients  test_rec_auc  test_rec_acc  test_rec_sens  test_rec_spec  test_patient_auc  test_patient_acc  test_patient_sens  test_patient_spec
+    0                 276               107     0.594077    55.800464     50.957567     72.229299         0.656807        64.485981         62.295082         67.391304                107      0.694220     63.441331      66.413662      56.756757          0.588382         56.074766          54.098361          58.695652
+    1                 276               106     0.776562    67.824216     66.627771     72.327965         0.742391        66.981132         55.000000         82.608696                107      0.628816     54.292343      47.615471      76.942675          0.573770         51.401869          36.065574          71.739130
+    2                 276               106     0.582897    56.754177     56.542056     57.702350         0.734783        64.150943         60.000000         69.565217                106      0.692804     62.814997      62.310385      64.714495          0.702536         63.207547          53.333333          76.086957
+    3                 276               106     0.669700    56.458711     54.887218     66.171004         0.627536        54.716981         43.333333         69.565217                106      0.556756     49.021480      45.560748      64.490862          0.650362         56.603774          50.000000          65.217391
+    4                 276               107     0.739480    67.732049     70.461733     61.593172         0.658232        59.813084         60.655738         58.695652                106      0.644500     66.243852      68.691729      51.115242          0.586594         64.150943          70.000000          56.521739

@@ -64,12 +64,13 @@ class ResNetMelSpectrogramClassifier(nn.Module):
     ResNet18 with pre-trained ImageNet weights
     Adapted for binary classification
     """
-    def __init__(self, num_classes=2, dropout=0.5, pretrained=True):
+    def __init__(self, num_classes=2, dropout=0.5, pretrained=True, freeze_layers=True):
         """
         Args:
             num_classes: Number of output classes (2 for binary classification)
             dropout: Dropout probability for final classifier
             pretrained: Whether to use ImageNet pre-trained weights
+            freeze_layers: Whether to freeze early convolutional layers
         """
         super(ResNetMelSpectrogramClassifier, self).__init__()
         
@@ -78,6 +79,17 @@ class ResNetMelSpectrogramClassifier(nn.Module):
         
         if pretrained:
             print("  ✓ Loaded ImageNet pre-trained ResNet18 weights")
+            
+            # Freeze early layers to prevent overfitting on small dataset
+            if freeze_layers:
+                # Freeze conv1, bn1, and layer1 (first residual block)
+                for param in self.resnet.conv1.parameters():
+                    param.requires_grad = False
+                for param in self.resnet.bn1.parameters():
+                    param.requires_grad = False
+                for param in self.resnet.layer1.parameters():
+                    param.requires_grad = False
+                print("  ✓ Froze early layers (conv1, bn1, layer1) to prevent overfitting")
         
         # Get number of features from ResNet's final layer
         num_features = self.resnet.fc.in_features
@@ -281,10 +293,12 @@ def train_model(
     # Data: 77% PD (label=1), 23% Control (label=0)
     # Weight minority class (Control) higher: [Control_weight, PD_weight] = [3.25, 1.0]
     class_weights = torch.FloatTensor([3.25, 1.0]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    # Label smoothing prevents overconfident predictions (0.1 smoothing)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
     
     # Lower learning rate for fine-tuning pre-trained model
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=5e-5)
+    # Increased weight decay from 5e-5 to 1e-4 for stronger regularization
+    optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     
     # Learning rate scheduler: reduce LR when validation AUC plateaus
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -500,7 +514,7 @@ def run_5fold_cv(
         
         # Initialize ResNet model with pre-trained weights
         print("\nInitializing ResNet18 model...")
-        model = ResNetMelSpectrogramClassifier(num_classes=2, dropout=dropout, pretrained=pretrained)
+        model = ResNetMelSpectrogramClassifier(num_classes=2, dropout=dropout, pretrained=pretrained, freeze_layers=True)
         
         # Train
         trained_model, best_val_metrics, training_history = train_model(
@@ -759,11 +773,11 @@ if __name__ == "__main__":
     TRAIN_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
     VAL_TEST_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
     
-    # Hyperparameters (optimized for pre-trained ResNet)
+    # Hyperparameters (optimized for pre-trained ResNet with anti-overfitting)
     BATCH_SIZE = 64  # Total batch size (splits across GPUs with DataParallel)
     NUM_EPOCHS = 100
     LEARNING_RATE = 0.0003  # Lower LR for fine-tuning pre-trained model
-    DROPOUT = 0.35
+    DROPOUT = 0.5  # Increased from 0.35 to prevent overfitting
     PATIENCE = 25  # Increased for transfer learning
     MIN_EPOCHS = 15  # Warm-up period before early stopping
     AGGREGATION_METHOD = 'average'  # or 'majority_vote'

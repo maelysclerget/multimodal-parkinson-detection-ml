@@ -60,6 +60,7 @@ class WaveformDataset(Dataset):
 class LSTMWaveformClassifier(nn.Module):
     """
     LSTM-based classifier for raw audio waveforms
+    Uses CNN downsampling before LSTM to handle long sequences
     """
     def __init__(
         self,
@@ -86,9 +87,23 @@ class LSTMWaveformClassifier(nn.Module):
         self.bidirectional = bidirectional
         self.num_directions = 2 if bidirectional else 1
         
+        # CNN downsampling layers to reduce sequence length
+        # Input: (batch, 1, 445000) -> Output: (batch, 64, ~1390)
+        self.conv1 = nn.Conv1d(1, 32, kernel_size=80, stride=40, padding=40)  # Downsample by 40
+        self.bn1 = nn.BatchNorm1d(32)
+        self.relu1 = nn.ReLU()
+        self.pool1 = nn.MaxPool1d(kernel_size=4, stride=4)  # Downsample by 4
+        
+        self.conv2 = nn.Conv1d(32, 64, kernel_size=3, stride=2, padding=1)  # Downsample by 2
+        self.bn2 = nn.BatchNorm1d(64)
+        self.relu2 = nn.ReLU()
+        self.pool2 = nn.MaxPool1d(kernel_size=2, stride=2)  # Downsample by 2
+        # Total downsampling: 40 * 4 * 2 * 2 = 640x
+        # 445000 / 640 ≈ 695 timesteps (manageable for LSTM)
+        
         # LSTM layers
         self.lstm = nn.LSTM(
-            input_size=input_size,
+            input_size=64,  # Now taking CNN features
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
@@ -114,8 +129,19 @@ class LSTMWaveformClassifier(nn.Module):
         Returns:
             Output logits of shape (batch_size, num_classes)
         """
-        # Reshape: (batch_size, 1, seq_len) -> (batch_size, seq_len, 1)
-        x = x.transpose(1, 2)
+        # CNN downsampling: (batch, 1, seq_len) -> (batch, 64, reduced_len)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.relu1(x)
+        x = self.pool1(x)
+        
+        x = self.conv2(x)
+        x = self.bn2(x)
+        x = self.relu2(x)
+        x = self.pool2(x)
+        
+        # Reshape for LSTM: (batch, channels, seq) -> (batch, seq, channels)
+        x = x.transpose(1, 2).contiguous()
         
         # LSTM forward pass
         # lstm_out shape: (batch_size, seq_len, hidden_size * num_directions)
@@ -179,10 +205,18 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
     return avg_loss, accuracy
 
 
-def evaluate(model, dataloader, device):
+def evaluate(model, dataloader, device, aggregation_method='average'):
     """
     Evaluate model at recording and patient level
-    Patient-level: Majority vote aggregation
+    
+    Args:
+        model: The model to evaluate
+        dataloader: DataLoader for evaluation data
+        device: Device to run evaluation on
+        aggregation_method: Method for patient-level aggregation
+            - 'majority_vote': Most common prediction (hard voting)
+            - 'average': Average probabilities (soft voting, uniform weights)
+            - 'weighted_average': Confidence-weighted average (high confidence predictions have more influence)
     """
     model.eval()
     
@@ -227,7 +261,7 @@ def evaluate(model, dataloader, device):
     except:
         rec_auc = 0.0
     
-    # Patient-level aggregation using MAJORITY VOTE
+    # Patient-level aggregation
     unique_health_codes = np.unique(all_health_codes)
     patient_labels = []
     patient_preds = []
@@ -236,14 +270,36 @@ def evaluate(model, dataloader, device):
     for hc in unique_health_codes:
         mask = all_health_codes == hc
         patient_label = all_labels[mask][0]  # All recordings from same patient have same label
+        rec_probs = all_probs[mask]
         
-        # Majority vote: most common prediction
-        rec_preds = all_preds[mask]
-        vote_counts = Counter(rec_preds)
-        patient_pred = vote_counts.most_common(1)[0][0]
-        
-        # Average probability for AUC calculation
-        patient_prob = np.mean(all_probs[mask])
+        if aggregation_method == 'majority_vote':
+            # Majority vote: most common prediction
+            rec_preds = all_preds[mask]
+            vote_counts = Counter(rec_preds)
+            patient_pred = vote_counts.most_common(1)[0][0]
+            patient_prob = np.mean(rec_probs)  # For AUC
+            
+        elif aggregation_method == 'average':
+            # Average probability (uniform weights)
+            patient_prob = np.mean(rec_probs)
+            patient_pred = 1 if patient_prob >= 0.5 else 0
+            
+        elif aggregation_method == 'weighted_average':
+            # Weighted average: higher confidence predictions get more weight
+            # Weight = |prob - 0.5| (distance from uncertain threshold)
+            # Predictions closer to 0 or 1 have higher influence
+            confidence_weights = np.abs(rec_probs - 0.5)
+            
+            # Avoid division by zero
+            if confidence_weights.sum() > 0:
+                patient_prob = np.average(rec_probs, weights=confidence_weights)
+            else:
+                patient_prob = np.mean(rec_probs)
+            
+            patient_pred = 1 if patient_prob >= 0.5 else 0
+            
+        else:
+            raise ValueError(f"Unknown aggregation method: {aggregation_method}")
         
         patient_labels.append(patient_label)
         patient_preds.append(patient_pred)
@@ -293,11 +349,15 @@ def train_model(
     num_epochs=50,
     learning_rate=0.001,
     device='cuda',
-    patience=15
+    patience=15,
+    aggregation_method='average'
 ):
     """
     Training loop with dynamic learning rate, early stopping based on validation patient-level AUC
     Multi-GPU support with DataParallel
+    
+    Args:
+        aggregation_method: Method for patient-level aggregation ('majority_vote', 'average', 'weighted_average')
     """
     # Multi-GPU setup
     if device.type == 'cuda' and torch.cuda.device_count() > 1:
@@ -308,8 +368,8 @@ def train_model(
     
     # Class weighting for imbalanced data
     # Data: 77% PD (label=1), 23% Control (label=0)
-    # Weight minority class (Control) higher: [Control_weight, PD_weight] = [3.0, 1.0]
-    class_weights = torch.FloatTensor([3.0, 1.0]).to(device)
+    # Weight minority class (Control) higher: [Control_weight, PD_weight] = [3.25, 1.0]
+    class_weights = torch.FloatTensor([3.25, 1.0]).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     
@@ -333,14 +393,14 @@ def train_model(
         'learning_rate': []
     }
     
-    print("\nStarting training...")
+    print(f"\nStarting training (aggregation: {aggregation_method})...")
     
     for epoch in range(num_epochs):
         # Train
         train_loss, train_acc = train_epoch(model, train_loader, criterion, optimizer, device)
         
         # Validate
-        val_metrics = evaluate(model, val_loader, device)
+        val_metrics = evaluate(model, val_loader, device, aggregation_method=aggregation_method)
         
         # Update learning rate based on validation patient AUC
         scheduler.step(val_metrics['patient_auc'])
@@ -402,7 +462,8 @@ def run_5fold_cv(
     patience=15,
     device='cuda',
     output_dir='lstm_results',
-    max_length=441000
+    max_length=441000,
+    aggregation_method='average'
 ):
     """
     Run 5-fold cross-validation
@@ -422,6 +483,7 @@ def run_5fold_cv(
         device: Device to train on ('cuda' or 'cpu')
         output_dir: Directory to save results and plots
         max_length: Maximum waveform length (samples)
+        aggregation_method: Patient-level aggregation ('majority_vote', 'average', 'weighted_average')
     
     Returns:
         DataFrame with results for all folds
@@ -543,7 +605,8 @@ def run_5fold_cv(
             num_epochs=num_epochs,
             learning_rate=learning_rate,
             device=device,
-            patience=patience
+            patience=patience,
+            aggregation_method=aggregation_method
         )
         
         # Save training history
@@ -593,7 +656,7 @@ def run_5fold_cv(
         plt.close()
         
         # Evaluate best model on TEST set
-        test_metrics = evaluate(trained_model, test_loader, device)
+        test_metrics = evaluate(trained_model, test_loader, device, aggregation_method=aggregation_method)
         
         # Print summary for this fold
         print(f"\nFold {fold} - Best Model Performance:")
@@ -633,7 +696,7 @@ def run_5fold_cv(
     print(results_df.to_string(index=False))
     
     print("\n" + "="*80)
-    print("TEST SET - AVERAGE PERFORMANCE (Patient-Level Majority Vote)")
+    print(f"TEST SET - AVERAGE PERFORMANCE (Patient-Level {aggregation_method.replace('_', ' ').title()})")
     print("="*80)
     print(f"  AUC:         {results_df['test_patient_auc'].mean():.4f} ± {results_df['test_patient_auc'].std():.4f}")
     print(f"  Accuracy:    {results_df['test_patient_acc'].mean():.2f}% ± {results_df['test_patient_acc'].std():.2f}%")
@@ -658,7 +721,8 @@ def run_5fold_cv(
         f.write(f"  Dropout: {dropout}\n")
         f.write(f"  Max Epochs: {num_epochs}\n")
         f.write(f"  Early Stopping Patience: {patience}\n")
-        f.write(f"  Max Waveform Length: {max_length} samples\n\n")
+        f.write(f"  Max Waveform Length: {max_length} samples\n")
+        f.write(f"  Aggregation Method: {aggregation_method}\n\n")
         
         f.write("--- VALIDATION SET ---\n\n")
         f.write("Recording-Level:\n")
@@ -667,7 +731,7 @@ def run_5fold_cv(
         f.write(f"  Sensitivity: {results_df['val_rec_sens'].mean():.2f}% ± {results_df['val_rec_sens'].std():.2f}%\n")
         f.write(f"  Specificity: {results_df['val_rec_spec'].mean():.2f}% ± {results_df['val_rec_spec'].std():.2f}%\n\n")
         
-        f.write("Patient-Level (Majority Vote):\n")
+        f.write(f"Patient-Level ({aggregation_method.replace('_', ' ').title()}):\n")
         f.write(f"  AUC:         {results_df['val_patient_auc'].mean():.4f} ± {results_df['val_patient_auc'].std():.4f}\n")
         f.write(f"  Accuracy:    {results_df['val_patient_acc'].mean():.2f}% ± {results_df['val_patient_acc'].std():.2f}%\n")
         f.write(f"  Sensitivity: {results_df['val_patient_sens'].mean():.2f}% ± {results_df['val_patient_sens'].std():.2f}%\n")
@@ -680,7 +744,7 @@ def run_5fold_cv(
         f.write(f"  Sensitivity: {results_df['test_rec_sens'].mean():.2f}% ± {results_df['test_rec_sens'].std():.2f}%\n")
         f.write(f"  Specificity: {results_df['test_rec_spec'].mean():.2f}% ± {results_df['test_rec_spec'].std():.2f}%\n\n")
         
-        f.write("Patient-Level (Majority Vote):\n")
+        f.write(f"Patient-Level ({aggregation_method.replace('_', ' ').title()}):\n")
         f.write(f"  AUC:         {results_df['test_patient_auc'].mean():.4f} ± {results_df['test_patient_auc'].std():.4f}\n")
         f.write(f"  Accuracy:    {results_df['test_patient_acc'].mean():.2f}% ± {results_df['test_patient_acc'].std():.2f}%\n")
         f.write(f"  Sensitivity: {results_df['test_patient_sens'].mean():.2f}% ± {results_df['test_patient_sens'].std():.2f}%\n")
@@ -799,7 +863,8 @@ if __name__ == "__main__":
     NUM_LAYERS = 2
     DROPOUT = 0.3
     PATIENCE = 15
-    MAX_LENGTH = 441000  # 10 seconds at 44100 Hz
+    MAX_LENGTH = 445000  # Safe margin to cover all waveforms (max observed: ~444k)
+    AGGREGATION_METHOD = 'weighted_average'  # Options: 'majority_vote', 'average', 'weighted_average'
     
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -825,5 +890,6 @@ if __name__ == "__main__":
         patience=PATIENCE,
         device=device,
         output_dir='/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model/Results/LSTM/V1',
-        max_length=MAX_LENGTH
+        max_length=MAX_LENGTH,
+        aggregation_method=AGGREGATION_METHOD
     )
