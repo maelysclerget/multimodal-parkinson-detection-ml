@@ -38,8 +38,8 @@ class EarlyFusionMLP(nn.Module):
             ])
             in_dim = hidden_dim
         
-        # Output layer (single node for binary classification)
-        layers.append(nn.Linear(in_dim, 1))
+        # Output layer (two nodes for binary classification with CrossEntropyLoss)
+        layers.append(nn.Linear(in_dim, 2))
         
         self.mlp = nn.Sequential(*layers)
 
@@ -62,7 +62,7 @@ class EarlyFusionMLP(nn.Module):
         
         if verbose:
             print(f"Input dimension: {self.input_dim}")
-            print(f"MLP architecture: {self.input_dim} -> {' -> '.join(map(str, hidden_dims))} -> 1 (binary classification)")
+            print(f"MLP architecture: {self.input_dim} -> {' -> '.join(map(str, hidden_dims))} -> 2 (binary classification)")
             print(f"Device: {self.device}")
     
     def forward(self, features: torch.Tensor) -> torch.Tensor:
@@ -73,7 +73,7 @@ class EarlyFusionMLP(nn.Module):
             features: Input features of shape (batch, input_dim)
             
         Returns:
-            Logits of shape (batch, 1)
+            Logits of shape (batch, 2)
         """
         # Pass through MLP
         forward_output = self.mlp(features)
@@ -83,13 +83,13 @@ class EarlyFusionMLP(nn.Module):
     def predict(self, features: torch.Tensor) -> torch.Tensor:
         """Get class predictions (0 or 1)."""
         output = self.forward(features)
-        return (output > 0).squeeze().long()
+        return torch.argmax(output, dim=1)
     
     def predict_proba(self, features: torch.Tensor) -> torch.Tensor:
         """Get class probabilities."""
         output = self.forward(features)
-        probs = torch.sigmoid(output)
-        return torch.cat([1 - probs, probs], dim=1)
+        probs = torch.softmax(output, dim=1)
+        return probs
     
     def fit(self, train_features: torch.Tensor, train_labels: torch.Tensor,
             epochs: int = 50, batch_size: int = 32, class_weight: float = 2.0, 
@@ -130,12 +130,12 @@ class EarlyFusionMLP(nn.Module):
                 
                 optimizer.zero_grad()
                 logits = self.forward(feat)
-                loss = criterion(logits, lbl.float().unsqueeze(1))
+                loss = criterion(logits, lbl)
                 loss.backward()
                 optimizer.step()
                 
                 epoch_loss += loss.item() * len(lbl)
-                all_preds.extend((logits > 0).squeeze().long().cpu().numpy())
+                all_preds.extend(torch.argmax(logits, dim=1).cpu().numpy())
                 all_labels.extend(lbl.cpu().numpy())
             
             epoch_loss /= len(dataset)
@@ -175,12 +175,12 @@ class EarlyFusionMLP(nn.Module):
             y_score = self.predict_proba(test_features).cpu().numpy()
 
         result_metrics = {
-            "test_loss": nn.BCEWithLogitsLoss()(output, test_labels.float().unsqueeze(1)).item(),
+            "test_loss": nn.CrossEntropyLoss()(output, test_labels).item(),
             "test_acc": accuracy_score(y_true, y_pred),
             "test_f1": f1_score(y_true, y_pred),
             "test_conf_mat": confusion_matrix(y_true, y_pred),
-            "test_roc_auc": roc_auc_score(y_true, torch.sigmoid(output).detach().cpu().numpy()),
-            "test_roc_curve": roc_curve(y_true, torch.sigmoid(output).detach().cpu().numpy())
+            "test_roc_auc": roc_auc_score(y_true, torch.softmax(output, dim=1)[:, 1].detach().cpu().numpy()),
+            "test_roc_curve": roc_curve(y_true, torch.softmax(output, dim=1)[:, 1].detach().cpu().numpy())
         }
 
         return result_metrics
