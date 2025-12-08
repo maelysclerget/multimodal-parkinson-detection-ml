@@ -33,10 +33,10 @@ def cross_validation_5fold_early_fusion(
     Perform 5-fold cross-validation training for early fusion models.
     
     Args:
-        features_csv: Path to CSV file containing features
-        labels_csv: Path to CSV file containing labels
-        train_folds_csv: Path to CSV file containing training fold indices
-        val_test_folds_csv: Path to CSV file containing validation/test fold indices
+        features_csv: Path to CSV file containing features (first 3 columns are patient IDs, rest are features)
+        labels_csv: Path to CSV file containing labels in 'label_PD' column and 'healthcode' for patient IDs
+        train_folds_csv: Path to CSV file with 'healthcode', 'fold_iteration', and 'subset' (='train') columns
+        val_test_folds_csv: Path to CSV file with 'healthCode', 'fold_iteration', and 'subset' (='val'/'test') columns
         output_dir: Directory to save model checkpoints and results
         NN_type: Type of neural network - "MLP" or "CNN" (default: "MLP")
         hidden_dims: List of hidden layer dimensions (default: [256, 128, 64])
@@ -65,14 +65,33 @@ def cross_validation_5fold_early_fusion(
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     
     # Load data
-    features = pd.read_csv(features_csv).values
-    labels = pd.read_csv(labels_csv).values.flatten()
-    train_folds = pd.read_csv(train_folds_csv).values.flatten()
-    val_test_folds = pd.read_csv(val_test_folds_csv).values.flatten()
+    features_df = pd.read_csv(features_csv)
+    labels_df = pd.read_csv(labels_csv)
+    train_folds_df = pd.read_csv(train_folds_csv)
+    val_test_folds_df = pd.read_csv(val_test_folds_csv)
+    
+    # Extract features (skip first 3 columns which contain patient ID information)
+    feature_columns = features_df.columns[3:]
+    features = features_df[feature_columns].values
     
     # Standardize features
     scaler = StandardScaler()
     features_scaled = scaler.fit_transform(features)
+    
+    # Get patient IDs from features (assuming 'healthcode' is in the first 3 columns)
+    # We'll match on healthcode column from features_df
+    if 'healthcode' in features_df.columns:
+        features_healthcodes = features_df['healthcode'].values
+    
+    # Create a mapping from healthcode to index in features array
+    healthcode_to_idx = {hc: idx for idx, hc in enumerate(features_healthcodes)}
+    
+    # Extract labels and match with features
+    labels_healthcodes = labels_df['healthCode'].values
+    labels_values = labels_df['label_PD'].values
+    
+    # Create label mapping
+    label_map = {hc: label for hc, label in zip(labels_healthcodes, labels_values)}
     
     input_dim = features.shape[1]
     
@@ -111,17 +130,28 @@ def cross_validation_5fold_early_fusion(
             print(f"Fold {fold + 1}/5")
             print(f"{'='*50}")
         
-        # Get fold indices
-        train_idx = np.where(train_folds == fold)[0]
-        test_idx = np.where(val_test_folds == fold)[0]
+        # Get train healthcodes for this fold
+        train_fold_mask = (train_folds_df['fold_iteration'] == fold) & (train_folds_df['subset'] == 'train')
+        train_healthcodes = train_folds_df[train_fold_mask]['healthCode'].values
+        
+        # Get test healthcodes for this fold (using 'healthCode' column name)
+        test_fold_mask = (val_test_folds_df['fold_iteration'] == fold) & (val_test_folds_df['subset'] == 'test')
+        test_healthcodes = val_test_folds_df[test_fold_mask]['healthCode'].values
+        
+        # Map healthcodes to feature indices and get labels
+        train_valid_hc = [hc for hc in train_healthcodes if hc in healthcode_to_idx and hc in label_map]
+        test_valid_hc = [hc for hc in test_healthcodes if hc in healthcode_to_idx and hc in label_map]
+        
+        train_idx = np.array([healthcode_to_idx[hc] for hc in train_valid_hc], dtype=np.int64)
+        test_idx = np.array([healthcode_to_idx[hc] for hc in test_valid_hc], dtype=np.int64)
         
         # Get training data
-        X_train = features_scaled[train_idx]
-        y_train = labels[train_idx]
+        X_train = np.ascontiguousarray(features_scaled[train_idx])
+        y_train = np.array([label_map[hc] for hc in train_valid_hc], dtype=np.float32)
         
         # Get test data
-        X_test = features_scaled[test_idx]
-        y_test = labels[test_idx]
+        X_test = np.ascontiguousarray(features_scaled[test_idx])
+        y_test = np.array([label_map[hc] for hc in test_valid_hc], dtype=np.float32)
         
         if verbose:
             print(f"Train samples: {len(X_train)}, Test samples: {len(X_test)}")

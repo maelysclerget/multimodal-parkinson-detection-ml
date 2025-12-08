@@ -77,7 +77,7 @@ class EarlyFusionMLP(nn.Module):
         """
         # Pass through MLP
         forward_output = self.mlp(features)
-        
+
         return forward_output
 
     def predict(self, features: torch.Tensor) -> torch.Tensor:
@@ -162,11 +162,15 @@ class EarlyFusionMLP(nn.Module):
         """
         self.eval()
         
+        # Move tensors to the same device as the model
+        test_features = test_features.to(self.device)
+        test_labels = test_labels.to(self.device)
+        
         with torch.no_grad():
             output = self.forward(test_features)
-            y_true  = test_labels.numpy()
-            y_pred  = self.predict(test_features).numpy()
-            y_score = self.predict_proba(test_features).numpy()
+            y_true  = test_labels.cpu().numpy()
+            y_pred  = self.predict(test_features).cpu().numpy()
+            y_score = self.predict_proba(test_features).cpu().numpy()
 
         result_metrics = {
             "test_loss": nn.BCEWithLogitsLoss()(output, test_labels.float().unsqueeze(1)).item(),
