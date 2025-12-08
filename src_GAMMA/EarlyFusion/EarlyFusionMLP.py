@@ -92,6 +92,7 @@ class EarlyFusionMLP(nn.Module):
         return probs
     
     def fit(self, train_features: torch.Tensor, train_labels: torch.Tensor,
+            val_features: Optional[torch.Tensor] = None, val_labels: Optional[torch.Tensor] = None,
             epochs: int = 50, batch_size: int = 32, class_weight: float = 2.0, 
             lr: float = 1e-3, weight_decay: float = 0, verbose: bool = True):
         """
@@ -100,16 +101,22 @@ class EarlyFusionMLP(nn.Module):
         Args:
             train_features: Training features (N, input_dim)
             train_labels: Training labels (N,)
+            val_features: Validation features (N_val, input_dim) (optional)
+            val_labels: Validation labels (N_val,) (optional)
             epochs: Number of training epochs (default: 50)
             batch_size: Batch size (default: 32)
             class_weight: Weight for class 0 (controls) to handle imbalance (default: 2)
             lr: Learning rate (default: 1e-3)
             weight_decay: L2 penalization coefficient (default: 0)
             verbose: Whether the method should output verbal execution tracing (default: True)
+            
+        Returns:
+            val_loss_history: List of validation losses per epoch (if validation data provided), else None
         """
         # Reset history
         self.train_loss_history = []
         self.train_acc_history = []
+        val_loss_history = []
         
         # Create data loader
         dataset = TensorDataset(train_features, train_labels)
@@ -144,12 +151,31 @@ class EarlyFusionMLP(nn.Module):
             self.train_loss_history.append(epoch_loss)
             self.train_acc_history.append(epoch_acc)
             
-            if verbose and (epoch + 1) % 10 == 0:
-                print(f"Epoch {epoch+1}/{epochs} | Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.4f}")
+            # Validation at the end of each epoch
+            if val_features is not None and val_labels is not None:
+                self.eval()
+                with torch.no_grad():
+                    val_features_device = val_features.to(self.device)
+                    val_labels_device = val_labels.to(self.device)
+                    
+                    val_logits = self.forward(val_features_device)
+                    val_loss = criterion(val_logits, val_labels_device).item()
+                    val_loss_history.append(val_loss)
+                    
+                    if verbose and (epoch + 1) % 10 == 0:
+                        val_preds = self.predict(val_features_device).cpu().numpy()
+                        val_acc = accuracy_score(val_labels.cpu().numpy(), val_preds)
+                        print(f"Epoch {epoch+1}/{epochs} | Train Loss: {epoch_loss:.4f} | Train Acc: {epoch_acc:.4f} | "
+                              f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
+            else:
+                if verbose and (epoch + 1) % 10 == 0:
+                    print(f"Epoch {epoch+1}/{epochs} | Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.4f}")
         
         if verbose:
             print(f"Training complete. Final - Loss: {self.train_loss_history[-1]:.4f}, "
                   f"Acc: {self.train_acc_history[-1]:.4f}")
+        
+        return val_loss_history if val_features is not None else None
             
     def test(self, test_features: torch.Tensor, test_labels: torch.Tensor):
         """

@@ -18,15 +18,13 @@ def cross_validation_5fold_early_fusion(
     train_folds_csv,
     val_test_folds_csv,
     output_dir,
-    NN_type="MLP",
-    hidden_dims=[256, 128, 64],
+    hidden_dims=[256, 128, 64, 32, 16, 8, 4],
     batch_size=64,
     num_epochs=100,
     learning_rate=0.001,
     weight_decay=0.0,
     dropout=0.5,
-    pooling_type="max",
-    class_weight=1.0,
+    class_weight=3.0,
     verbose=True
 ):
     """
@@ -38,14 +36,12 @@ def cross_validation_5fold_early_fusion(
         train_folds_csv: Path to CSV file with 'healthcode', 'fold_iteration', and 'subset' (='train') columns
         val_test_folds_csv: Path to CSV file with 'healthCode', 'fold_iteration', and 'subset' (='val'/'test') columns
         output_dir: Directory to save model checkpoints and results
-        NN_type: Type of neural network - "MLP" or "CNN" (default: "MLP")
         hidden_dims: List of hidden layer dimensions (default: [256, 128, 64])
         batch_size: Batch size for training (default: 64)
         num_epochs: Number of training epochs (default: 100)
         learning_rate: Learning rate for optimizer (default: 0.001)
         weight_decay: L2 regularization weight decay (default: 0.0)
         dropout: Dropout rate (default: 0.5)
-        pooling_type: Pooling type for CNN - 'max', 'avg', or 'adaptive_avg' (default: 'max')
         class_weight: Weight for positive class in loss function (default: 1.0)
         verbose: Whether to print training progress (default: True)
         
@@ -82,7 +78,7 @@ def cross_validation_5fold_early_fusion(
     
     if verbose:
         print(f"{'='*50}")
-        print(f"5-Fold Cross-Validation with {NN_type}")
+        print(f"5-Fold Cross-Validation with")
         print(f"{'='*50}")
         print(f"Input dimension: {input_dim}")
         print(f"Hidden dimensions: {hidden_dims}")
@@ -150,30 +146,22 @@ def cross_validation_5fold_early_fusion(
             print(f"Test label distribution: {np.bincount(y_test.astype(int))}")
         
         # Initialize model based on NN_type
-        if NN_type.upper() == "MLP":
-            model = EarlyFusionMLP(
-                input_dim=input_dim,
-                hidden_dims=hidden_dims,
-                dropout=dropout
-            )
-        elif NN_type.upper() == "CNN":
-            model = EarlyFusionCNN(
-                input_dim=input_dim,
-                hidden_dims=hidden_dims,
-                dropout=dropout,
-                pooling_type=pooling_type
-            )
-        else:
-            raise ValueError(f"Unknown NN_type: {NN_type}. Must be 'MLP' or 'CNN'")
+        
+        model = EarlyFusionMLP(
+            input_dim=input_dim,
+            hidden_dims=hidden_dims,
+            dropout=dropout
+        )
         
         # Train model
         if verbose:
-            print(f"Training {NN_type} model...")
+            print(f"Training MLP model...")
         
         model.fit(
             X_train, y_train,
             epochs=num_epochs,
             batch_size=batch_size,
+            class_weight=class_weight,
             lr=learning_rate,
             weight_decay=weight_decay,
             verbose=verbose
@@ -181,7 +169,7 @@ def cross_validation_5fold_early_fusion(
         
         # Test model
         if verbose:
-            print(f"Evaluating {NN_type} model...")
+            print(f"Evaluating MLP model...")
         
         test_metrics = model.test(X_test, y_test)
         
