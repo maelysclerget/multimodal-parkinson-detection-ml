@@ -92,7 +92,7 @@ class EarlyFusionMLP(nn.Module):
         return torch.cat([1 - probs, probs], dim=1)
     
     def fit(self, train_features: torch.Tensor, train_labels: torch.Tensor,
-            epochs: int = 50, batch_size: int = 32,
+            epochs: int = 50, batch_size: int = 32, class_weight: float = 2.0, 
             lr: float = 1e-3, weight_decay: float = 0, verbose: bool = True):
         """
         Fit the model on training data.
@@ -102,6 +102,7 @@ class EarlyFusionMLP(nn.Module):
             train_labels: Training labels (N,)
             epochs: Number of training epochs (default: 50)
             batch_size: Batch size (default: 32)
+            class_weight: Weight for class 0 (controls) to handle imbalance (default: 2)
             lr: Learning rate (default: 1e-3)
             weight_decay: L2 penalization coefficient (default: 0)
             verbose: Whether the method should output verbal execution tracing (default: True)
@@ -113,8 +114,9 @@ class EarlyFusionMLP(nn.Module):
         # Create data loader
         dataset = TensorDataset(train_features, train_labels)
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
-        
-        criterion = nn.BCEWithLogitsLoss()
+
+        class_weights = torch.FloatTensor([class_weight, 1.0]).to(self.device)
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
         optimizer = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
         
         for epoch in range(epochs):
