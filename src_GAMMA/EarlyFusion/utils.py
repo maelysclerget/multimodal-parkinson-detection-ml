@@ -72,28 +72,13 @@ def cross_validation_5fold_early_fusion(
     
     # Extract features (skip first 3 columns which contain patient ID information)
     feature_columns = features_df.columns[3:]
-    features = features_df[feature_columns].values
-    
-    # Standardize features
-    scaler = StandardScaler()
-    features_scaled = scaler.fit_transform(features)
-    
-    # Get patient IDs from features (assuming 'healthcode' is in the first 3 columns)
-    # We'll match on healthcode column from features_df
-    if 'healthcode' in features_df.columns:
-        features_healthcodes = features_df['healthcode'].values
-    
-    # Create a mapping from healthcode to index in features array
-    healthcode_to_idx = {hc: idx for idx, hc in enumerate(features_healthcodes)}
-    
-    # Extract labels and match with features
-    labels_healthcodes = labels_df['healthCode'].values
-    labels_values = labels_df['label_PD'].values
     
     # Create label mapping
+    labels_healthcodes = labels_df['healthCode'].values
+    labels_values = labels_df['label_PD'].values
     label_map = {hc: label for hc, label in zip(labels_healthcodes, labels_values)}
     
-    input_dim = features.shape[1]
+    input_dim = len(feature_columns)
     
     if verbose:
         print(f"{'='*50}")
@@ -101,7 +86,7 @@ def cross_validation_5fold_early_fusion(
         print(f"{'='*50}")
         print(f"Input dimension: {input_dim}")
         print(f"Hidden dimensions: {hidden_dims}")
-        print(f"Number of samples: {len(features)}")
+        print(f"Total samples in features: {len(features_df)}")
     
     # Device setup
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -138,23 +123,31 @@ def cross_validation_5fold_early_fusion(
         test_fold_mask = (val_test_folds_df['fold_iteration'] == fold) & (val_test_folds_df['subset'] == 'test')
         test_healthcodes = val_test_folds_df[test_fold_mask]['healthCode'].values
         
-        # Map healthcodes to feature indices and get labels
-        train_valid_hc = [hc for hc in train_healthcodes if hc in healthcode_to_idx and hc in label_map]
-        test_valid_hc = [hc for hc in test_healthcodes if hc in healthcode_to_idx and hc in label_map]
+        # Filter features_df to include ALL trials for the healthcodes in train/test sets
+        train_mask = features_df['healthcode'].isin(train_healthcodes) & features_df['healthcode'].isin(label_map.keys())
+        test_mask = features_df['healthcode'].isin(test_healthcodes) & features_df['healthcode'].isin(label_map.keys())
         
-        train_idx = np.array([healthcode_to_idx[hc] for hc in train_valid_hc], dtype=np.int64)
-        test_idx = np.array([healthcode_to_idx[hc] for hc in test_valid_hc], dtype=np.int64)
+        train_df = features_df[train_mask]
+        test_df = features_df[test_mask]
         
-        # Get training data
-        X_train = np.ascontiguousarray(features_scaled[train_idx])
-        y_train = np.array([label_map[hc] for hc in train_valid_hc], dtype=np.float32)
+        # Extract features for all trials
+        X_train_raw = train_df[feature_columns].values
+        X_test_raw = test_df[feature_columns].values
         
-        # Get test data
-        X_test = np.ascontiguousarray(features_scaled[test_idx])
-        y_test = np.array([label_map[hc] for hc in test_valid_hc], dtype=np.float32)
+        # Standardize features using training data statistics
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train_raw)
+        X_test = scaler.transform(X_test_raw)
+        
+        # Get labels for all trials
+        y_train = np.array([label_map[hc] for hc in train_df['healthcode'].values], dtype=np.float32)
+        y_test = np.array([label_map[hc] for hc in test_df['healthcode'].values], dtype=np.float32)
         
         if verbose:
-            print(f"Train samples: {len(X_train)}, Test samples: {len(X_test)}")
+            print(f"Train: {len(np.unique(train_healthcodes))} unique healthcodes, {len(X_train)} total trials")
+            print(f"Test: {len(np.unique(test_healthcodes))} unique healthcodes, {len(X_test)} total trials")
+            print(f"Train label distribution: {np.bincount(y_train.astype(int))}")
+            print(f"Test label distribution: {np.bincount(y_test.astype(int))}")
         
         # Initialize model based on NN_type
         if NN_type.upper() == "MLP":
