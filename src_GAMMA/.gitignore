@@ -11,6 +11,7 @@ images.jpeg
 x1080.jpeg
 
 # Byte-compiled / cached files
+*.__pycache__/
 __pycache__/
 *.py[cod]
 *.pyo
@@ -32,3 +33,10 @@ dist/
 
 # macOS metadata (safe to ignore)
 .DS_Store
+
+# Models
+models/
+
+# CSVs 
+paired_healthcode.csv 
+fusion_features.csv 
