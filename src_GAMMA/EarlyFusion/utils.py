@@ -103,7 +103,9 @@ def cross_validation_5fold_early_fusion(
         print(f"Features after filtering to 5-fold healthcodes: {features_df.shape}")
     
     # Prepare feature columns (exclude metadata)
-    metadata_cols = ['filename', 'healthCode', 'record_id', 'label_PD', 'trial_id']
+    # Define all possible metadata columns
+    metadata_cols = ['filename', 'healthCode', 'record_id', 'label_PD', 'trial_id', 'row_id', 
+                     'filename_file1', 'filename_file2', 'record_id_file1', 'record_id_file2']
     feature_cols = [col for col in features_df.columns if col not in metadata_cols]
     if verbose:
         print(f"Number of features: {len(feature_cols)}")
@@ -126,7 +128,7 @@ def cross_validation_5fold_early_fusion(
     for fold in range(5):
         if verbose:
             print(f"\n{'='*50}")
-            print(f"Fold {fold}/4 (Fold iteration {fold})")
+            print(f"Fold {fold + 1}/5 (Fold iteration {fold + 1})")
             print(f"{'='*50}")
         
         # Get unique patient healthCodes for this fold
@@ -176,7 +178,7 @@ def cross_validation_5fold_early_fusion(
         
         # Initialize model
         model = EarlyFusionMLP(
-            input_dim=X_train.shape[1],
+            input_dim=X_train_tensor.shape[1],
             hidden_dims=hidden_dims,
             dropout=dropout,
             verbose=False

@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+import pandas as pd
+import numpy as np
 from typing import Optional
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
@@ -249,8 +251,6 @@ class EarlyFusionMLP(nn.Module):
             final patient-level prediction. Instance variables (TP, TN, FP, FN, test_acc, 
             test_f1, test_auc) are updated with patient-level metrics.
         """
-        import pandas as pd
-        import numpy as np
         
         # Make a copy to avoid modifying the original dataframe
         test_df_copy = test_df.copy()
@@ -261,7 +261,8 @@ class EarlyFusionMLP(nn.Module):
         
         # Drop healthCode, label_PD, and any other metadata columns to get only numeric features
         # Metadata columns commonly include: filename, record_id, healthCode, label_PD
-        metadata_columns = ['healthCode', 'label_PD', 'filename', 'record_id', 'healthcode']
+        metadata_columns = ['healthCode', 'label_PD', 'filename', 'record_id', 'healthcode', 'row_id', 'trial_id',
+                          'filename_file1', 'filename_file2', 'record_id_file1', 'record_id_file2']
         feature_columns = [col for col in test_df_copy.columns if col not in metadata_columns]
         test_features = test_df_copy[feature_columns].values
         
