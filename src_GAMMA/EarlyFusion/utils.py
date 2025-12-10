@@ -283,10 +283,11 @@ def hyperparameter_tuning(
     learning_rate,
     verbose=True        
 ):
-    hyperparameter_sets = product(hidden_dims, batch_size, weight_decay, dropout, class_weight, num_epochs, learning_rate)
+    # Convert product iterator to list to allow multiple iterations
+    hyperparameter_sets = list(product(hidden_dims, batch_size, weight_decay, dropout, class_weight, num_epochs, learning_rate))
 
     if verbose:
-        print(f"Testing {len(hyperparameter_sets)} Hyperparameter Combinations", "\n")
+        print(f"Testing {len(hyperparameter_sets)} Hyperparameter Combinations\n")
 
     # Creating an empty variable which will hold the results dictionary of the best model
     best_results = None
@@ -341,6 +342,7 @@ def hyperparameter_tuning(
                 print("------------------------------", "\n")
 
             best_results = hyperparam_set_res
+            best_ROC_AUC = hyperparam_set_res['mean_test_roc_auc']
         
         else:
             # Force garbage collection of bad models to free up space
