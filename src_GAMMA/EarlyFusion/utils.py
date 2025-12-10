@@ -283,6 +283,47 @@ def hyperparameter_tuning(
     learning_rate,
     verbose=True        
 ):
+    """
+    Perform hyperparameter tuning using grid search over specified hyperparameter ranges.
+    
+    Evaluates all combinations of hyperparameters using 5-fold cross-validation and selects
+    the best model based on mean test ROC AUC score. The best model's state dictionaries
+    for all 5 folds are saved to the output directory.
+    
+    Args:
+        features_csv: Path to CSV file containing features with 'healthCode' column
+        labels_csv: Path to CSV file containing labels in 'label_PD' column and 'healthCode' for patient IDs
+        train_folds_csv: Path to CSV file with 'healthCode', 'fold_iteration', and 'subset' columns
+        val_test_folds_csv: Path to CSV file with 'healthCode', 'fold_iteration', and 'subset' (='val'/'test') columns
+        output_dir: Directory to save the best model checkpoints (.pth files for each fold)
+        hidden_dims: List of hidden layer dimension configurations to test (e.g., [[256, 128, 64], [512, 256]])
+        batch_size: List of batch sizes to test (e.g., [32, 64])
+        weight_decay: List of L2 regularization coefficients to test (e.g., [0.0, 0.01])
+        dropout: List of dropout rates to test (e.g., [0.3, 0.5, 0.8])
+        class_weight: List of class weights for handling class imbalance (e.g., [1, 2, 3])
+        num_epochs: List of maximum training epoch values to test (e.g., [100, 150])
+        learning_rate: List of initial learning rates to test (e.g., [0.001, 0.0001])
+        verbose: Whether to print training progress and results (default: True)
+        
+    Returns:
+        dict: Dictionary containing the best model's results with the following keys:
+            - 'mean_test_acc': Mean test accuracy across 5 folds
+            - 'std_test_acc': Standard deviation of test accuracy
+            - 'mean_test_f1': Mean test F1 score across 5 folds
+            - 'std_test_f1': Standard deviation of test F1 score
+            - 'mean_test_roc_auc': Mean test ROC AUC across 5 folds
+            - 'std_test_roc_auc': Standard deviation of test ROC AUC
+            - 'confusion_matrices': List of 5 confusion matrices (one per fold)
+            - 'models_list': List of 5 model state dictionaries (one per fold)
+            
+    Note:
+        - Grid search evaluates all possible combinations of the provided hyperparameters
+        - Total combinations = len(hidden_dims) × len(batch_size) × len(weight_decay) × 
+                               len(dropout) × len(class_weight) × len(num_epochs) × len(learning_rate)
+        - Models not selected as best are deleted from memory using garbage collection
+        - Selection criterion: highest mean test ROC AUC across 5 folds
+        - Early stopping and learning rate scheduling are applied based on validation ROC AUC
+    """
     # Convert product iterator to list to allow multiple iterations
     hyperparameter_sets = list(product(hidden_dims, batch_size, weight_decay, dropout, class_weight, num_epochs, learning_rate))
 
@@ -294,6 +335,15 @@ def hyperparameter_tuning(
 
     # Tracking best Test ROC AUC throughout the tuning
     best_ROC_AUC = 0
+
+    # Tracking best hyperparameters
+    BEST_HIDDEN_LAYERS = None
+    BEST_BATCH_SIZE = None
+    BEST_WEIGHT_DECAY = None
+    BEST_DROPOUT = None
+    BEST_CLASS_WEIGHT = None
+    BEST_NUM_EPOCHS = None
+    BEST_LEARNING_RATE = None
 
     for hyperparam_set in hyperparameter_sets:
         HIDDEN_LAYERS, BATCH_SIZE, WEIGHT_DECAY, DROPOUT, CLASS_WEIGHT, NUM_EPOCHS, LEARNING_RATE = hyperparam_set
@@ -343,6 +393,15 @@ def hyperparameter_tuning(
 
             best_results = hyperparam_set_res
             best_ROC_AUC = hyperparam_set_res['mean_test_roc_auc']
+
+            BEST_HIDDEN_LAYERS = HIDDEN_LAYERS
+            BEST_BATCH_SIZE = BATCH_SIZE
+            BEST_WEIGHT_DECAY = WEIGHT_DECAY
+            BEST_DROPOUT = DROPOUT  
+            BEST_CLASS_WEIGHT = CLASS_WEIGHT
+            BEST_NUM_EPOCHS = NUM_EPOCHS
+            BEST_LEARNING_RATE = LEARNING_RATE
+
         
         else:
             # Force garbage collection of bad models to free up space
@@ -350,7 +409,20 @@ def hyperparameter_tuning(
             gc.collect()
 
     if verbose: 
+        print("------------------------------")
         print("End Summary")
+        print("------------------------------")
+        print("Hyperparameters")
+        print("------------------------------")
+        print(f"Hidden Layers: {BEST_HIDDEN_LAYERS}")
+        print(f"Batch Size: {BEST_BATCH_SIZE}")
+        print(f"Weight Decay: {BEST_WEIGHT_DECAY}")
+        print(f"Dropout: {BEST_DROPOUT}")
+        print(f"Class Weight: {BEST_CLASS_WEIGHT}")
+        print(f"Num Epochs: {BEST_NUM_EPOCHS}")
+        print(f"Learning Rate: {BEST_LEARNING_RATE}")
+        print("------------------------------")
+        print("Best Model Results")
         print("------------------------------")
         print(f"Best Test Accuracy: {best_results['mean_test_acc']:.4f} ± {best_results['std_test_acc']:.4f}")
         print(f"Best Test F1 Score: {best_results['mean_test_f1']:.4f} ± {best_results['std_test_f1']:.4f}")
