@@ -1,3 +1,40 @@
+"""
+CNN-based Classification using Tapping Test Heatmaps
+
+This script trains a 2D Convolutional Neural Network on heatmap images generated
+from tapping test data to classify PD vs Healthy subjects using 5-fold cross-validation.
+
+Architecture:
+- 3 convolutional blocks (with batch norm, pooling, dropout)
+- Global average pooling
+- 2 fully connected layers (128 → 64 → 2)
+- Binary classification with CrossEntropyLoss
+
+Key Features:
+- Per-batch 50-50 healthy/PD balancing using WeightedRandomSampler
+- Patient-level aggregation of trial predictions
+- Cross-validation across 5 folds
+- Early stopping based on validation AUC
+- Generates comprehensive performance visualizations
+
+Input:
+- Heatmap images: /mloscratch/users/clerget/data/tapping_heatmaps/{healthCode}/{trial_id}.png
+- Labels: paired_healthcode.csv with diagnosis labels
+- Splits: 5-fold CV split files
+
+Output Files:
+- CV results CSV:
+  * 04_cnn_heatmap_Heatmap_CNN_cv_results.csv - Per-fold results with metrics and aggregated mean
+  
+- Visualization figure (in cv_results/):
+  * 04_cnn_heatmap_Heatmap_CNN_cv_results.png - Performance metrics and summary table
+
+Dependencies:
+- Heatmap PNG files must be pre-generated
+- Cross-validation split files
+- PyTorch, torchvision, scikit-learn, pandas, matplotlib
+"""
+
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -14,17 +51,16 @@ from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_m
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+# ===== Paths and Configuration =====
 train_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_train.csv"
 valtest_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_val_test.csv"
 labels_path = "/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
-
-# Heatmap directory
 heatmap_base_path = "/mloscratch/users/clerget/data/tapping_heatmaps"
 
 NUM_FOLDS = 5
 batch_size = 32
 
-# ===== Image Transform =====
+# ===== Image Preprocessing =====# ===== Image Transform =====
 image_transform = transforms.Compose([
     transforms.Resize((224, 224)),  # Resize heatmap to standard size
     transforms.ToTensor(),  # Convert to tensor (0-1 range)
@@ -33,7 +69,26 @@ image_transform = transforms.Compose([
 
 # ===== Custom Dataset for Heatmaps =====
 class HeatmapDataset(Dataset):
-    """Dataset for loading heatmap images per trial"""
+    """
+    PyTorch Dataset for loading tapping heatmap images.
+    
+    Loads PNG heatmap images for each trial/session and applies transforms.
+    Automatically validates that heatmap files exist before loading.
+    
+    Args:
+        healthcodes (list): List of healthcode IDs
+        trial_ids (list): List of trial/session IDs matching healthcodes
+        labels (list): Diagnosis labels (0=Healthy, 1=PD) matching healthcodes
+        heatmap_base_path (str): Base directory containing heatmap folders
+        transform (callable): Optional image transforms to apply
+    
+    Structure expected:
+        heatmap_base_path/
+        ├── {healthCode}/
+        │   ├── {trial_id}.png
+        │   └── ...
+        └── ...
+    """
     def __init__(self, healthcodes, trial_ids, labels, heatmap_base_path, transform=None):
         self.healthcodes = healthcodes
         self.trial_ids = trial_ids
@@ -78,7 +133,25 @@ class HeatmapDataset(Dataset):
 
 # ===== Define 2D CNN Model for Heatmaps =====
 class CNN2D_Heatmap(nn.Module):
-    """2D CNN for heatmap images"""
+    """
+    2D Convolutional Neural Network for heatmap classification.
+    
+    Architecture:
+    - Conv Block 1: 1 → num_channels channels, 224×224 → 112×112
+    - Conv Block 2: num_channels → 2×num_channels, 112×112 → 56×56
+    - Conv Block 3: 2×num_channels → 4×num_channels, 56×56 → 28×28
+    - Global Average Pooling
+    - FC: 4×num_channels → 128 → 64 → 2 (binary classification)
+    
+    Each conv block includes: Conv2d, BatchNorm2d, ReLU, MaxPool2d, Dropout2d
+    
+    Args:
+        num_channels (int): Base number of channels in first conv layer (default: 32)
+        dropout_rate (float): Dropout rate for convolutional layers (default: 0.5)
+    
+    Input shape: (batch_size, 1, 224, 224) - grayscale images
+    Output shape: (batch_size, 2) - logits for binary classification
+    """
     def __init__(self, num_channels=32, dropout_rate=0.5):
         super(CNN2D_Heatmap, self).__init__()
         
@@ -121,8 +194,14 @@ class CNN2D_Heatmap(nn.Module):
         self.fc3 = nn.Linear(64, 2)  # Binary classification
     
     def forward(self, x):
-        """Forward pass
-        Input: (batch_size, 1, 224, 224)
+        """
+        Forward pass through CNN.
+        
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, 1, 224, 224)
+        
+        Returns:
+            torch.Tensor: Output logits of shape (batch_size, 2)
         """
         # Conv block 1
         x = self.conv1(x)
@@ -200,6 +279,26 @@ def create_balanced_sampler(y_train):
 
 
 def aggregate_predictions(healthcodes, pred_probas, pred_binaries, labels, aggregation_method='mean'):
+    """
+    Aggregate trial-level predictions to patient-level.
+    
+    Since a patient can have multiple heatmap images (trials), this function
+    aggregates predictions to get a single prediction per patient.
+    
+    Args:
+        healthcodes (list): HealthCode IDs for each prediction
+        pred_probas (list): Predicted probabilities for class 1 (PD)
+        pred_binaries (list): Binary predictions (0 or 1)
+        labels (list): True labels
+        aggregation_method (str): Method to aggregate:
+            - 'mean': Average probability across trials
+            - 'majority': Majority vote of binary predictions
+            - 'max': Maximum probability across trials
+    
+    Returns:
+        pd.DataFrame: Patient-level predictions with columns
+            [healthCode, pred_proba, pred_binary, label]
+    """
     """Aggregate trial-level predictions to patient-level predictions"""
     
     results_df = pd.DataFrame({
@@ -234,6 +333,29 @@ def aggregate_predictions(healthcodes, pred_probas, pred_binaries, labels, aggre
 
 
 def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, fold=0, use_balanced_sampler=True):
+    """
+    Train and evaluate CNN model on a single fold of cross-validation.
+    
+    Handles:
+    - Data loading and preprocessing
+    - Model initialization and training
+    - Validation with early stopping
+    - Test evaluation with patient-level aggregation
+    
+    Args:
+        data_with_labels (pd.DataFrame): Feature data with columns [healthCode, trial_id, label_PD, ...]
+        split_info (pd.DataFrame): CV split info with columns [healthCode, fold_iteration, subset]
+        model_name (str): Name for logging (e.g., 'CNN_Heatmap')
+        model_prefix (str): Prefix for saving models
+        fold (int): Fold number in cross-validation (0-4) (default: 0)
+        use_balanced_sampler (bool): Use 50-50 balanced sampling (default: True)
+    
+    Returns:
+        dict: Results dictionary containing:
+            - 'model', 'fold': Configuration info
+            - 'accuracy', 'f1_score', 'auc': Patient-level metrics
+            - 'num_patients': Number of unique patients in test set
+    """
     print(f"\n Model: {model_name} | Fold: {fold}")
     print(f" └─ Balanced Sampler (50-50 Healthy/PD): {'✓ Enabled' if use_balanced_sampler else '✗ Disabled'}")
     
@@ -507,22 +629,39 @@ def create_cv_visualization(model_name, accuracy, f1_score, auc, accuracy_std, f
     plt.close()
 
 
-# ===== Main =====
+# ===== Main Execution =====
 if __name__ == "__main__":
+    """
+    Main execution block for CNN-based heatmap classification with 5-fold cross-validation.
     
-    # Load labels
+    Pipeline:
+        [1/4] Load and prepare data: labels and train/val/test splits
+        [2/4] Discover heatmap images and merge with diagnostic labels
+        [3/4] Execute 5-fold cross-validation training
+        [4/4] Calculate metrics, save results, and generate visualizations
+    """
+    
+    print("\n" + "="*80)
+    print(" "*20 + "HEATMAP CNN 5-FOLD CROSS-VALIDATION")
+    print("="*80)
+    
+    # [1/4] Load and prepare data
+    print("\n[1/4] Loading data and labels...")
+    print("-" * 80)
+    
     labels_df = pd.read_csv(labels_path)
     labels_df["label_PD"] = labels_df["label_PD"].astype(int)
+    print(f"✓ Loaded {len(labels_df)} patient labels from: {labels_path}")
     
-    # Load split info
     split_info = pd.read_csv(train_split_path)
     split_info_valtest = pd.read_csv(valtest_split_path)
     split_info = pd.concat([split_info, split_info_valtest], ignore_index=True)
+    print(f"✓ Loaded {len(split_info)} train/val/test splits")
     
-    print("\n===== Heatmap CNN Training =====")
-    print(f"Heatmap directory: {heatmap_base_path}")
+    # [2/4] Discover heatmap images and merge with labels
+    print("\n[2/4] Discovering heatmap images and merging with labels...")
+    print("-" * 80)
     
-    # Create trial_id from heatmap directories
     heatmap_dir = Path(heatmap_base_path)
     all_trials = []
     
@@ -537,33 +676,37 @@ if __name__ == "__main__":
                 })
     
     trials_df = pd.DataFrame(all_trials)
-    print(f"Found {len(trials_df)} heatmap trials")
+    print(f"✓ Found {len(trials_df)} heatmap trials in: {heatmap_base_path}")
     
-    # Merge with labels
     data_with_labels = trials_df.merge(labels_df, on='healthCode', how='inner')
-    print(f"After merge with labels: {len(data_with_labels)} trials")
+    print(f"✓ Merged with labels: {len(data_with_labels)} trials with valid labels")
+    print(f"  - Positive samples (PD):     {(data_with_labels['label_PD'] == 1).sum()}")
+    print(f"  - Negative samples (Control): {(data_with_labels['label_PD'] == 0).sum()}")
     
-    # Store results for all folds
+    # [3/4] Execute 5-fold cross-validation
+    print("\n[3/4] Training CNN across 5 folds...")
+    print("-" * 80)
+    
     all_results = []
     
-    # Loop through all 5 folds
     for fold in range(NUM_FOLDS):
-        print(f"\n{'='*70}")
-        print(f"FOLD {fold}/{NUM_FOLDS - 1}")
-        print(f"{'='*70}")
-        
-        # Train heatmap CNN
-        result = train_and_evaluate(data_with_labels, split_info, "Heatmap CNN", "07_cnn_heatmap", fold=fold)
+        print(f"\nFold {fold + 1}/{NUM_FOLDS}:")
+        result = train_and_evaluate(
+            data_with_labels,
+            split_info,
+            "Heatmap CNN",
+            "07_cnn_heatmap",
+            fold=fold
+        )
         all_results.append(result)
     
-    # Convert to DataFrame
+    # [4/4] Calculate metrics, save results, and generate visualizations
+    print("\n[4/4] Calculating cross-validation metrics and saving results...")
+    print("-" * 80)
+    
     results_df = pd.DataFrame(all_results)
     
-    # Calculate mean metrics
-    print("\n" + "="*70)
-    print("CROSS-VALIDATION RESULTS (Mean ± Std across 5 folds)")
-    print("="*70)
-    
+    # Calculate mean and std across folds
     mean_accuracy = results_df['accuracy'].mean()
     std_accuracy = results_df['accuracy'].std()
     
@@ -573,12 +716,7 @@ if __name__ == "__main__":
     mean_auc = results_df['auc'].mean()
     std_auc = results_df['auc'].std()
     
-    print(f"\nHeatmap CNN:")
-    print(f"  Accuracy:  {mean_accuracy:.4f} ± {std_accuracy:.4f}")
-    print(f"  F1-Score:  {mean_f1:.4f} ± {std_f1:.4f}")
-    print(f"  AUC-ROC:   {mean_auc:.4f} ± {std_auc:.4f}")
-    
-    # Add mean row
+    # Add mean row to results
     results_df = pd.concat([results_df, pd.DataFrame([{
         'model': 'Heatmap CNN',
         'fold': 'MEAN',
@@ -592,17 +730,23 @@ if __name__ == "__main__":
         'auc_std': std_auc
     }])], ignore_index=True)
     
-    # Save results
+    # Save results CSV
     output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
-    csv_path = output_dir / '07_cnn_heatmap_Heatmap_CNN_cv_results.csv'
+    csv_path = output_dir / '04_cnn_heatmap_Heatmap_CNN_cv_results.csv'
     results_df.to_csv(csv_path, index=False)
-    print(f"\n✓ Results saved to: {csv_path}")
+    print(f"✓ Results CSV saved: {csv_path}")
+    
+    # Display summary metrics
+    print("\n" + "="*80)
+    print(" "*25 + "5-FOLD CROSS-VALIDATION RESULTS")
+    print("="*80)
+    print(f"\nHeatmap CNN Performance:")
+    print(f"  Accuracy:  {mean_accuracy:.4f} ± {std_accuracy:.4f}")
+    print(f"  F1-Score:  {mean_f1:.4f} ± {std_f1:.4f}")
+    print(f"  AUC-ROC:   {mean_auc:.4f} ± {std_auc:.4f}")
     
     # Generate visualization
-    print("\n" + "="*70)
-    print("Generating CV Mean Visualization...")
-    print("="*70)
-    
+    print(f"\nGenerating cross-validation visualization...")
     create_cv_visualization(
         model_name="Heatmap CNN",
         accuracy=mean_accuracy,
@@ -614,6 +758,13 @@ if __name__ == "__main__":
         model_prefix='07_cnn_heatmap'
     )
     
-    print("\n" + "="*70)
-    print("✓ Heatmap CNN Cross-Validation Complete!")
-    print("="*70)
+    # Final summary
+    print("\n" + "="*80)
+    print(" "*20 + "✓ HEATMAP CNN TRAINING COMPLETE")
+    print("="*80)
+    print(f"\nOutput Files:")
+    print(f"- CV results CSV:")
+    print(f"  * {csv_path.name} - Per-fold results")
+    print(f"\n- Visualization figure (in cv_results/):")
+    print(f"  * 04_cnn_heatmap_Heatmap_CNN_cv_results.png - General visualization")
+    print("\n")

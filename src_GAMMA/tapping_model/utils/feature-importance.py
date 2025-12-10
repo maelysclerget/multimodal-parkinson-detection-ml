@@ -1,6 +1,10 @@
 """
 Feature Importance Analysis for MLP - Tapping Modality
-Analyzes which tapping features matter most for PD prediction using trained MLP
+
+Analyzes which tapping features are most important for PD prediction using
+permutation importance on a trained MLP model.
+
+Uses the best hyperparameters found from V2 grid search.
 """
 
 import numpy as np
@@ -11,13 +15,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from sklearn.preprocessing import StandardScaler
-from sklearn.inspection import permutation_importance
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
+from sklearn.metrics import roc_auc_score
 
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-# Paths
+# ===== Paths =====
 train_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_train.csv"
 valtest_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_val_test.csv"
 labels_path = "/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
@@ -25,9 +28,8 @@ combined_features_path = "/mloscratch/users/clerget/data/csv/tapping_combined_fe
 
 NUM_FOLDS = 5
 batch_size = 64
-CORRELATION_THRESHOLD = 0.85
 
-# Best hyperparameters (from mlp_v3 search)
+# Best hyperparameters from MLP V2 grid search
 BEST_HYPERPARAMS = {
     'learning_rate': 0.0005,
     'weight_decay': 0.005,
@@ -36,8 +38,10 @@ BEST_HYPERPARAMS = {
     'hidden_dim_2': 16,
 }
 
+
 # ===== MLP Model =====
 class MLP(nn.Module):
+    """Multi-layer Perceptron for binary classification."""
     def __init__(self, input_dim, hidden_dim_1=64, hidden_dim_2=32, dropout_rate=0.5):
         super(MLP, self).__init__()
         self.net = nn.Sequential(
@@ -55,28 +59,6 @@ class MLP(nn.Module):
     
     def forward(self, x):
         return self.net(x)
-
-
-def remove_highly_correlated_features(features_df, threshold):
-    """Remove features that are highly correlated above threshold"""
-    feature_cols = [c for c in features_df.columns if c not in ["healthCode", "trial_id", "label_PD"]]
-    X = features_df[feature_cols].values
-    correlation_matrix = pd.DataFrame(X, columns=feature_cols).corr()
-    
-    features_to_remove = set()
-    upper_triangle = np.triu(np.ones_like(correlation_matrix, dtype=bool), k=1)
-    
-    for i in range(len(correlation_matrix.columns)):
-        if correlation_matrix.columns[i] in features_to_remove:
-            continue
-        for j in range(i+1, len(correlation_matrix.columns)):
-            if upper_triangle[i, j]:
-                corr_value = correlation_matrix.iloc[i, j]
-                if abs(corr_value) >= threshold:
-                    features_to_remove.add(correlation_matrix.columns[j])
-    
-    features_to_keep = [f for f in feature_cols if f not in features_to_remove]
-    return features_to_keep, len(features_to_remove)
 
 
 def create_balanced_sampler(y_train):
@@ -130,7 +112,7 @@ if __name__ == "__main__":
     print("\n" + "="*80)
     print("FEATURE IMPORTANCE ANALYSIS - MLP TAPPING MODEL")
     print("="*80)
-    print("Analyzes which tapping features matter for PD prediction")
+    print("Permutation importance: drop in AUC when each feature is shuffled")
     
     # Load data
     combined_features = pd.read_csv(combined_features_path)
@@ -160,13 +142,10 @@ if __name__ == "__main__":
     
     print(f"Fold 0 - Train: {len(train_df)}, Test: {len(test_df)}")
     
-    # Get features
+    # Extract all features (no filtering)
     feature_cols = [c for c in data_df.columns if c not in ["healthCode", "trial_id", "label_PD"]]
-    
-    # Remove correlated features
-    feature_cols, n_removed = remove_highly_correlated_features(data_df, CORRELATION_THRESHOLD)
-    print(f"Features after filtering (threshold={CORRELATION_THRESHOLD}): {len(feature_cols)} (removed {n_removed})")
-    print(f"Features: {feature_cols}\n")
+    print(f"Total features: {len(feature_cols)}")
+
     
     # Scale
     scaler = StandardScaler()
@@ -347,10 +326,8 @@ Model Configuration:
 
 Dataset:
   • Total features: {len(feature_cols)}
-  • Correlation threshold: {CORRELATION_THRESHOLD}
-  • Features removed: {n_removed}
   • Test samples: {len(test_df)}
-  • Test AUC: {best_val_auc:.4f}
+  • Baseline AUC: {baseline_auc:.4f}
 
 Top 5 Most Important Features:
 """
@@ -377,7 +354,7 @@ Bottom 5 Least Important Features:
     plt.tight_layout()
     
     # Save plot
-    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
+    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
     output_dir.mkdir(exist_ok=True, parents=True)
     
     plot_path = output_dir / 'feature_importance_mlp_permutation.png'

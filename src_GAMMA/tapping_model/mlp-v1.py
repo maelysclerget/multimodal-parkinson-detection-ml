@@ -1,26 +1,65 @@
+"""
+MLP-V1: Multi-Feature MLP Classification with 5-Fold Cross-Validation
+
+This script trains MLP classifiers on multiple feature sets (basic, advanced, combined)
+using 5-fold cross-validation to classify PD vs Healthy subjects. Includes optional
+hyperparameter tuning via random search on Fold 0.
+
+Architecture:
+- Input Layer: variable input_dim
+- Hidden Layer 1: 64 neurons with ReLU + Dropout
+- Hidden Layer 2: 32 neurons with ReLU + Dropout
+- Hidden Layer 3: 16 neurons with ReLU + Dropout(0.2)
+- Output Layer: 2 neurons (logits for CrossEntropyLoss)
+
+Key Features:
+- Trains on 3 feature sets: basic, advanced, and combined features
+- Optional random hyperparameter search (disabled by default)
+- Per-batch class balancing via WeightedRandomSampler alternative: class weights
+- Patient-level aggregation of trial predictions
+- Early stopping based on validation AUC (patience=10)
+- Generates per-fold and mean CV visualizations
+- Comprehensive results CSV files
+
+Input:
+- Feature CSVs: basic, advanced, and combined features
+- Labels: paired_healthcode.csv with diagnosis labels
+- Splits: 5-fold CV split files
+
+Output Files:
+- CV results CSVs:
+  * 01_basic_Basic_Features_results.csv
+  * 02_advanced_Advanced_Features_results.csv
+  * 03_combined_Combined_Features_results.csv
+  * results_all_models.csv - All models combined
+  
+- Visualization figures (in results/):
+  * CV summary figures: 0X_model_name_results.png (mean ± std)
+
+Dependencies:
+- PyTorch, scikit-learn, pandas, matplotlib, seaborn
+"""
+
 import numpy as np
 import pandas as pd
 from pathlib import Path
 
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from sklearn.preprocessing import StandardScaler
 
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_matrix, roc_curve
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+# ===== Paths and Configurations =====
 train_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_train.csv"
 valtest_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_val_test.csv"
 labels_path = "/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
 
-# lr ratio, missed taps, right, left, mean x, mean y...
-basic_features_path = "/mloscratch/users/clerget/data/csv/tapping_statistical_features.csv"
-
-# fatigue slope, variability index, fluctuation index...
+basic_features_path = "/mloscratch/users/clerget/data/csv/tapping_statistical_features_session.csv"
 advanced_features_path = "/mloscratch/users/clerget/data/csv/tapping_advanced_features_session.csv"
-
 combined_features_path = "/mloscratch/users/clerget/data/csv/tapping_combined_features_session.csv"
 
 NUM_FOLDS = 5
@@ -28,17 +67,31 @@ batch_size = 64
 
 # ===== Hyperparameter Grid for Tuning =====
 HYPERPARAMETER_GRID = {
-    'learning_rate': [1e-4, 1e-3, 1e-2], #try bigger learning rates, dynamic learning rates 
-    'weight_decay': [1e-4, 1e-3, 5e-3], #L2 reg 
+    'learning_rate': [1e-4, 1e-3, 1e-2],
+    'weight_decay': [1e-4, 1e-3, 5e-3],
     'dropout_rate': [0.2, 0.5, 0.7],
     'hidden_dim_1': [32, 64, 128],
     'hidden_dim_2': [16, 32, 64],
-    #'label_smoothing': [0.0, 0.1, 0.2],
-    #'batch_size': [32, 64, 128]
 }
 
 # ===== Define MLP Model =====
 class MLP(nn.Module):
+    """
+    Multi-layer Perceptron for binary classification (PD vs Healthy).
+    
+    Architecture:
+    - Input Layer: variable input_dim
+    - Hidden Layer 1: hidden_dim_1 neurons with ReLU + Dropout
+    - Hidden Layer 2: hidden_dim_2 neurons with ReLU + Dropout
+    - Hidden Layer 3: 16 neurons with ReLU + Dropout(0.2)
+    - Output Layer: 2 neurons (logits for CrossEntropyLoss)
+    
+    Args:
+        input_dim (int): Number of input features
+        hidden_dim_1 (int): Number of neurons in first hidden layer (default: 64)
+        hidden_dim_2 (int): Number of neurons in second hidden layer (default: 32)
+        dropout_rate (float): Dropout rate for first two hidden layers (default: 0.5)
+    """
     def __init__(self, input_dim, hidden_dim_1=64, hidden_dim_2=32, dropout_rate=0.5):
         super(MLP, self).__init__()
         self.net = nn.Sequential(
@@ -51,15 +104,41 @@ class MLP(nn.Module):
             nn.Linear(hidden_dim_2, 16),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(16, 2)  # Output 2 classes for CrossEntropyLoss
+            nn.Linear(16, 2)  
         )
     
-    def forward(self, x): #takes input tensor x and passes it through the network layers defined in __init__
-        # Return raw logits for use with CrossEntropyLoss
+    def forward(self, x):
+        """
+        Forward pass through the network.
+        
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, input_dim)
+        
+        Returns:
+            torch.Tensor: Output logits of shape (batch_size, 2)
+        """
         return self.net(x)
     
 def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='mean'):
-    """Aggregate trial-level predictions to patient-level predictions."""
+    """
+    Aggregate trial-level predictions to patient-level predictions.
+    
+    Since a patient can have multiple tapping sessions/trials, this function aggregates
+    the session-level predictions to get a single prediction per patient.
+    
+    Args:
+        test_df (pd.DataFrame): Test dataframe containing healthCode column
+        test_preds_proba (list): Predicted probabilities for class 1 (PD)
+        test_preds_binary (list): Binary predictions (0 or 1)
+        test_labels (list): True labels
+        aggregation_method (str): Method to aggregate predictions. Options:
+            - 'mean': Average probability across all sessions for each patient (default)
+            - 'majority': Majority vote of binary predictions
+            - 'max': Maximum probability across all sessions
+    
+    Returns:
+        pd.DataFrame: Patient-level predictions with columns [healthCode, pred_proba, pred_binary, label]
+    """
     
     results_df = pd.DataFrame({
         'healthCode': test_df['healthCode'].values,
@@ -71,7 +150,7 @@ def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_lab
     if aggregation_method == 'mean':
         patient_preds = results_df.groupby('healthCode').agg({
             'pred_proba': 'mean',
-            'label': 'first'  # Label is same for all trials of same patient
+            'label': 'first'
         }).reset_index()
         patient_preds['pred_binary'] = (patient_preds['pred_proba'] > 0.5).astype(int)
     
@@ -92,8 +171,26 @@ def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_lab
     return patient_preds
 
 
-def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparams=None): 
-    print(f"\n Model: {model_name} | Fold: {fold}")
+def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparams=None):
+    """
+    Train and evaluate MLP model on a single fold of cross-validation.
+    
+    Args:
+        features_df (pd.DataFrame): Combined features with columns [healthCode, trial_id, label_PD, feature_1, ...]
+        model_name (str): Name of the model configuration (e.g., 'Basic Features') for logging
+        model_prefix (str): Prefix for saving visualization files (e.g., '01_basic')
+        fold (int): Fold number in cross-validation (0-4) (default: 0)
+        hyperparams (dict): Hyperparameters with keys: learning_rate, weight_decay, dropout_rate,
+                           hidden_dim_1, hidden_dim_2. If None, uses defaults.
+    
+    Returns:
+        dict: Results dictionary containing:
+            - 'model', 'fold': Configuration info
+            - 'accuracy', 'f1_score', 'auc': Patient-level metrics
+            - 'num_patients': Number of unique patients in test set
+    """
+    
+    print(f"\nModel: {model_name} | Fold: {fold}")
     
     # Use default hyperparameters if not provided
     if hyperparams is None:
@@ -103,8 +200,6 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
             'dropout_rate': 0.5,
             'hidden_dim_1': 64,
             'hidden_dim_2': 32,
-            #'label_smoothing': 0.1,
-            #'batch_size': 64
         }
     
     # Extract hyperparameters
@@ -113,12 +208,10 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     dropout_rate = hyperparams.get('dropout_rate', 0.5)
     hidden_dim_1 = hyperparams.get('hidden_dim_1', 64)
     hidden_dim_2 = hyperparams.get('hidden_dim_2', 32)
-    #label_smoothing = hyperparams.get('label_smoothing', 0.1)
-    #batch_sz = hyperparams.get('batch_size', 64)
     
     if fold == 0:
         print(f"Hyperparameters: lr={learning_rate}, wd={weight_decay}, dropout={dropout_rate}, "
-              f"h1={hidden_dim_1}, h2={hidden_dim_2}, label_smooth={label_smoothing}, batch_size={batch_sz}")
+              f"h1={hidden_dim_1}, h2={hidden_dim_2}")
     
     # Load labels
     labels_df = pd.read_csv(labels_path)
@@ -285,60 +378,6 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     print(f"Patient-level F1-Score: {patient_f1:.4f}")
     print(f"Patient-level AUC-ROC:  {patient_auc:.4f}")
     
-    # ===== Generate Per-Fold Visualizations =====
-    fig, axes = plt.subplots(2, 2, figsize=(14, 11))
-    fig.suptitle(f'{model_name} - Fold {fold} Results', fontsize=16, fontweight='bold')
-    
-    # 1. Confusion Matrix
-    cm = confusion_matrix(patient_preds['label'], patient_preds['pred_binary'])
-    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', ax=axes[0, 0], cbar=False, 
-                xticklabels=['Healthy', 'PD'], yticklabels=['Healthy', 'PD'])
-    axes[0, 0].set_title(f'Confusion Matrix (Accuracy: {patient_accuracy:.4f})', fontweight='bold')
-    axes[0, 0].set_xlabel('Predicted')
-    axes[0, 0].set_ylabel('Actual')
-    
-    # 2. ROC Curve
-    fpr, tpr, _ = roc_curve(patient_preds['label'], patient_preds['pred_proba'])
-    axes[0, 1].plot(fpr, tpr, linewidth=2.5, label=f'AUC = {patient_auc:.4f}', color='#1f77b4')
-    axes[0, 1].plot([0, 1], [0, 1], 'k--', linewidth=1, label='Random')
-    axes[0, 1].set_xlabel('False Positive Rate', fontsize=11)
-    axes[0, 1].set_ylabel('True Positive Rate', fontsize=11)
-    axes[0, 1].set_title('ROC Curve', fontweight='bold')
-    axes[0, 1].legend(fontsize=10)
-    axes[0, 1].grid(True, alpha=0.3)
-    
-    # 3. Metrics Bar Plot
-    metrics = ['Accuracy', 'F1-Score', 'AUC-ROC']
-    values = [patient_accuracy, patient_f1, patient_auc]
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
-    axes[1, 0].bar(metrics, values, color=colors, alpha=0.7, edgecolor='black', linewidth=1.5)
-    axes[1, 0].set_ylabel('Score', fontsize=11)
-    axes[1, 0].set_title('Performance Metrics', fontweight='bold')
-    axes[1, 0].set_ylim([0, 1])
-    for i, v in enumerate(values):
-        axes[1, 0].text(i, v + 0.02, f'{v:.4f}', ha='center', fontweight='bold', fontsize=10)
-    axes[1, 0].grid(True, axis='y', alpha=0.3)
-    
-    # 4. Prediction Distribution
-    axes[1, 1].hist(patient_preds[patient_preds['label'] == 0]['pred_proba'], bins=15, alpha=0.6, label='Healthy', color='blue')
-    axes[1, 1].hist(patient_preds[patient_preds['label'] == 1]['pred_proba'], bins=15, alpha=0.6, label='PD', color='red')
-    axes[1, 1].axvline(0.5, color='black', linestyle='--', linewidth=2, label='Decision Threshold')
-    axes[1, 1].set_xlabel('Predicted Probability', fontsize=11)
-    axes[1, 1].set_ylabel('Frequency', fontsize=11)
-    axes[1, 1].set_title('Prediction Distribution', fontweight='bold')
-    axes[1, 1].legend(fontsize=10)
-    axes[1, 1].grid(True, alpha=0.3, axis='y')
-    
-    plt.tight_layout()
-    
-    # Save figure
-    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
-    fig_path = output_dir / f'{model_prefix}_{model_name.replace(" ", "_")}_fold{fold}_results.png'
-    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
-    print(f"✓ Fold visualization saved: {fig_path}")
-    
-    plt.close()
-    
     # Return data (visualization will be done later for mean CV results)
     return {
         'model': model_name,
@@ -350,7 +389,24 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     }
 
 def create_cv_visualization(model_name, accuracy, f1_score, auc, accuracy_std, f1_score_std, auc_std, model_prefix):
-    """Create visualization for CV mean results (no confusion matrix or ROC curve since we don't have raw predictions)"""
+    """
+    Create visualization for CV mean results across all folds.
+    
+    Generates a figure with mean metrics and standard deviations across 5 folds.
+    
+    Args:
+        model_name (str): Name of the model for the title
+        accuracy (float): Mean accuracy across folds
+        f1_score (float): Mean F1-score across folds
+        auc (float): Mean AUC-ROC across folds
+        accuracy_std (float): Standard deviation of accuracy
+        f1_score_std (float): Standard deviation of F1-score
+        auc_std (float): Standard deviation of AUC-ROC
+        model_prefix (str): Prefix for saving the figure file
+    
+    Returns:
+        None (saves figure to results/)
+    """
     
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle(f'{model_name} - Cross-Validation Results (Mean ± Std across 5 Folds)', 
@@ -398,8 +454,8 @@ def create_cv_visualization(model_name, accuracy, f1_score, auc, accuracy_std, f
     plt.tight_layout()
     
     # Save figure
-    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
-    fig_path = output_dir / f'{model_prefix}_{model_name.replace(" ", "_")}_cv_results.png'
+    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
+    fig_path = output_dir / f'{model_prefix}_{model_name.replace(" ", "_")}_results.png'
     plt.savefig(fig_path, dpi=300, bbox_inches='tight')
     print(f"✓ CV Visualization saved: {fig_path}")
     
@@ -407,17 +463,27 @@ def create_cv_visualization(model_name, accuracy, f1_score, auc, accuracy_std, f
 
 # ===== Hyperparameter Tuning =====
 def hyperparameter_search(features_df, model_name, model_prefix, num_folds=5, num_trials=10):
-    """Random search for hyperparameters using validation fold"""
+    """
+    Random search for optimal hyperparameters using Fold 0 validation.
+    
+    Performs random search over the hyperparameter grid, evaluating each combination
+    on Fold 0 only (for speed). Returns the best hyperparameters based on AUC.
+    
+    Args:
+        features_df (pd.DataFrame): Feature dataframe
+        model_name (str): Name of the model (e.g., 'Basic Features')
+        model_prefix (str): Prefix for saving files
+        num_folds (int): Number of folds (not used, kept for compatibility)
+        num_trials (int): Number of random trials to run (default: 10)
+    
+    Returns:
+        tuple: (best_hyperparams dict, search_results list)
+    """
     print(f"\n{'='*70}")
     print(f"HYPERPARAMETER SEARCH: {model_name}")
     print(f"{'='*70}")
     
-    import itertools
     import random
-    
-    # Generate random combinations
-    param_names = list(HYPERPARAMETER_GRID.keys())
-    param_values = list(HYPERPARAMETER_GRID.values())
     
     best_auc = 0.0
     best_hyperparams = None
@@ -462,72 +528,81 @@ def hyperparameter_search(features_df, model_name, model_prefix, num_folds=5, nu
     
     return best_hyperparams, search_results
 
-# ===== Main =====
+# ===== Main Execution =====
 if __name__ == "__main__":
+    """
+    Main execution block for MLP classification on multiple feature sets with 5-fold CV.
+    
+    Pipeline:
+        [1/4] Load feature sets (basic, advanced, combined)
+        [2/4] Optional hyperparameter search (disabled by default)
+        [3/4] Execute 5-fold cross-validation training
+        [4/4] Calculate metrics, save results, and generate visualizations
+    """
+    
+    print("\n" + "="*80)
+    print(" "*15 + "MLP-V1: MULTI-FEATURE CLASSIFICATION (5-FOLD CV)")
+    print("="*80)
+    
+    # [1/4] Load feature sets
+    print("\n[1/4] Loading feature sets...")
+    print("-" * 80)
     
     basic_features = pd.read_csv(basic_features_path)
     advanced_features = pd.read_csv(advanced_features_path)
     combined_features = pd.read_csv(combined_features_path)
     
-    print("\n===== Feature Sets Loaded =====")
-    print(f"Basic features shape: {basic_features.shape}")
-    print(f"Advanced features shape: {advanced_features.shape}")
-    print(f"Combined features shape: {combined_features.shape}\n")
+    print(f"✓ Basic features:      {basic_features.shape[0]} samples × {basic_features.shape[1]} features")
+    print(f"✓ Advanced features:   {advanced_features.shape[0]} samples × {advanced_features.shape[1]} features")
+    print(f"✓ Combined features:   {combined_features.shape[0]} samples × {combined_features.shape[1]} features")
     
-    # ===== STEP 1: Hyperparameter Search (Optional - set to False to skip) =====
+    # [2/4] Hyperparameter search (optional - disabled by default)
+    print("\n[2/4] Hyperparameter tuning...")
+    print("-" * 80)
+    
     PERFORM_HYPERPARAMETER_SEARCH = False  # Set to True to tune hyperparameters
     
     if PERFORM_HYPERPARAMETER_SEARCH:
-        print("\n" + "="*70)
-        print("STARTING HYPERPARAMETER SEARCH")
-        print("="*70)
-        
+        print("Performing random search over hyperparameter grid...")
         best_hp_basic, _ = hyperparameter_search(basic_features, "Basic Features", "01_basic", num_trials=10)
         best_hp_advanced, _ = hyperparameter_search(advanced_features, "Advanced Features", "02_advanced", num_trials=10)
         best_hp_combined, _ = hyperparameter_search(combined_features, "Combined Features", "03_combined", num_trials=10)
     else:
-        # Use default hyperparameters
+        print("Using default hyperparameters (search disabled)")
         best_hp_basic = {
             'learning_rate': 1e-3,
             'weight_decay': 1e-3,
             'dropout_rate': 0.5,
             'hidden_dim_1': 64,
             'hidden_dim_2': 32,
-            'label_smoothing': 0.1,
-            'batch_size': 64
         }
         best_hp_advanced = best_hp_basic.copy()
         best_hp_combined = best_hp_basic.copy()
     
-    # ===== STEP 2: Cross-Validation with Best Hyperparameters =====
-    print("\n" + "="*70)
-    print("CROSS-VALIDATION WITH BEST HYPERPARAMETERS")
-    print("="*70)
+    # [3/4] Cross-validation with best hyperparameters
+    print("\n[3/4] Training across 5 folds...")
+    print("-" * 80)
     
-    # Store results for all folds
     all_results = []
     
-    # Loop through all 5 folds
     for fold in range(NUM_FOLDS):
-        print(f"\n{'='*70}")
-        print(f"FOLD {fold}/{NUM_FOLDS - 1}")
-        print(f"{'='*70}")
-        
-        # Train all three models for this fold with best hyperparameters
+        print(f"\nFold {fold + 1}/{NUM_FOLDS}:")
         fold_results = []
         fold_results.append(train_and_evaluate(basic_features, "Basic Features", "01_basic", fold=fold, hyperparams=best_hp_basic))
         fold_results.append(train_and_evaluate(advanced_features, "Advanced Features", "02_advanced", fold=fold, hyperparams=best_hp_advanced))
         fold_results.append(train_and_evaluate(combined_features, "Combined Features", "03_combined", fold=fold, hyperparams=best_hp_combined))
-        
         all_results.extend(fold_results)
     
-    # Convert all results to DataFrame
+    # [4/4] Calculate metrics and save results
+    print("\n[4/4] Calculating results and generating visualizations...")
+    print("-" * 80)
+    
     results_df = pd.DataFrame(all_results)
     
     # Calculate mean metrics for each model
-    print("\n" + "="*70)
-    print("CROSS-VALIDATION RESULTS (Mean ± Std across 5 folds)")
-    print("="*70)
+    print("\n" + "="*80)
+    print(" "*20 + "5-FOLD CROSS-VALIDATION RESULTS")
+    print("="*80)
     
     mean_data = []
     for model_name in ["Basic Features", "Advanced Features", "Combined Features"]:
@@ -566,8 +641,10 @@ if __name__ == "__main__":
     
     final_results_df = pd.concat([results_df, pd.DataFrame(mean_data)], ignore_index=True)
     
-    # Save ONE CSV per model (with all folds + mean)
-    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
+    # Save results CSV files
+    print(f"\nSaving results CSVs...")
+    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
+    output_dir.mkdir(exist_ok=True, parents=True)
     
     model_prefixes = {
         'Basic Features': '01_basic',
@@ -577,14 +654,14 @@ if __name__ == "__main__":
     
     for model_name, prefix in model_prefixes.items():
         model_df = final_results_df[final_results_df['model'] == model_name]
-        csv_path = output_dir / f'{prefix}_{model_name.replace(" ", "_")}_cv_results.csv'
+        csv_path = output_dir / f'{prefix}_{model_name.replace(" ", "_")}_results.csv'
         model_df.to_csv(csv_path, index=False)
-        print(f"✓ Saved: {csv_path}")
+        print(f"  ✓ {csv_path.name}")
     
-    # Also save all models together in one file
-    all_csv = output_dir / 'cv_results_all_models.csv'
+    # Save all models combined
+    all_csv = output_dir / 'results_all_models.csv'
     final_results_df.to_csv(all_csv, index=False)
-    print(f"\n✓ All models saved to: {all_csv}")
+    print(f"  ✓ {all_csv.name}")
     
     # Find best model based on mean AUC
     mean_results_df = final_results_df[final_results_df['fold'] == 'MEAN']
@@ -593,19 +670,8 @@ if __name__ == "__main__":
     best_auc = mean_results_df.loc[best_idx, 'auc']
     print(f"\n✓ Best model: {best_model} (AUC: {best_auc:.4f})")
     
-    print("\n" + "="*70)
-    print("Output Files:")
-    print("  - 01_basic_Basic_Features_cv_results.csv")
-    print("  - 02_advanced_Advanced_Features_cv_results.csv")
-    print("  - 03_combined_Combined_Features_cv_results.csv")
-    print("  - cv_results_all_models.csv (all models combined)")
-    print("="*70)
-    
-    # Generate visualizations for CV mean results
-    print("\n" + "="*70)
-    print("Generating CV Mean Visualizations...")
-    print("="*70)
-    
+    # Generate visualizations
+    print(f"\nGenerating visualizations...")
     for model_name, prefix in model_prefixes.items():
         mean_row = mean_results_df[mean_results_df['model'] == model_name].iloc[0]
         create_cv_visualization(
@@ -619,6 +685,16 @@ if __name__ == "__main__":
             model_prefix=prefix
         )
     
-    print("\n" + "="*70)
-    print("✓ Cross-Validation Complete!")
-    print("="*70)
+    # Final summary
+    print("\n" + "="*80)
+    print(" "*20 + "✓ MLP-V1 TRAINING COMPLETE")
+    print("="*80)
+    print(f"\nOutput Files:")
+    print(f"- CV results CSVs:")
+    print(f"  * 01_basic_Basic_Features_results.csv - Per-fold results")
+    print(f"  * 02_advanced_Advanced_Features_results.csv - Per-fold results")
+    print(f"  * 03_combined_Combined_Features_results.csv - Per-fold results")
+    print(f"  * results_all_models.csv - All models combined")
+    print(f"\n- Visualization figures (in results/):")
+    print(f"  * CV summary figures: 0X_model_name_results.png (mean ± std)")
+    print("\n")

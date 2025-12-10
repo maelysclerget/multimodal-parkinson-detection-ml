@@ -1,26 +1,49 @@
+"""
+MLP-v2: Hyperparameter Grid Search with 5-Fold Cross-Validation
+
+This script performs a comprehensive hyperparameter grid search for an MLP classifier
+using 5-fold cross-validation on tapping features to classify PD vs Healthy subjects.
+
+Key Features:
+- Hyperparameter grid search over learning rate, weight decay, dropout, and hidden dimensions
+- 5-fold cross-validation with per-batch 50-50 healthy/PD balancing
+- Dynamic learning rate scheduling (ReduceLROnPlateau)
+- Early stopping based on validation AUC
+- Saves best performing model (all 5 folds) to data/saved_models/
+- Generates detailed results CSV with per-fold and mean metrics
+- Creates comprehensive visualizations of results
+
+Output Files:
+- CV results CSVs:
+  * mlp_v2_hp_search_all_folds.csv - Per-fold results
+  * mlp_v2_hp_search_mean.csv - Mean metrics per hyperparameter combination
+  
+- Visualization figures (in results/):
+  * mlp_v2_results_comparison.png - Bar plots of all metrics across hyperparameters
+  * mlp_v2_hyperparameter_sensitivity.png - Sensitivity analysis for each hyperparameter
+  * mlp_v2_best_model_summary.png - Detailed summary of best model across all folds
+  
+- Best model weights (in data/saved_models/):
+  * best_model_hp{X}_fold{Y}.pth - PyTorch model weights for all 5 folds
+"""
+
 import numpy as np
 import pandas as pd
 from pathlib import Path
-
+from itertools import product
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset, WeightedRandomSampler
 from sklearn.preprocessing import StandardScaler
-
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, confusion_matrix, roc_curve
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import seaborn as sns
 
+# ===== Paths and Configurations =====
 train_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_train.csv"
 valtest_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_val_test.csv"
 labels_path = "/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
-
-# missed taps, right, left, mean x, mean y...
-basic_features_path = "/mloscratch/users/clerget/data/csv/tapping_statistical_features_sessions.csv"
-
-# fatigue slope, variability index, fluctuation index...
-advanced_features_path = "/mloscratch/users/clerget/data/csv/tapping_advanced_features_session.csv"
-
 combined_features_path = "/mloscratch/users/clerget/data/csv/tapping_combined_features_session.csv"
 
 NUM_FOLDS = 5
@@ -28,7 +51,7 @@ batch_size = 64
 
 # ===== Hyperparameter Grid for Tuning =====
 HYPERPARAMETER_GRID = {
-    'learning_rate': [0.001],
+    'learning_rate': [0.001, 0.0005],
     'weight_decay': [1e-4, 1e-3, 5e-3],
     'dropout_rate': [0.2, 0.5, 0.7],
     'hidden_dim_1': [32, 64, 128],
@@ -37,6 +60,22 @@ HYPERPARAMETER_GRID = {
 
 # ===== Define MLP Model =====
 class MLP(nn.Module):
+    """
+    Multi-layer Perceptron for binary classification (PD vs Healthy).
+    
+    Architecture:
+    - Input Layer: variable input_dim
+    - Hidden Layer 1: hidden_dim_1 neurons with ReLU + Dropout
+    - Hidden Layer 2: hidden_dim_2 neurons with ReLU + Dropout
+    - Hidden Layer 3: 16 neurons with ReLU + Dropout(0.2)
+    - Output Layer: 2 neurons (logits for CrossEntropyLoss)
+    
+    Args:
+        input_dim (int): Number of input features
+        hidden_dim_1 (int): Number of neurons in first hidden layer (default: 64)
+        hidden_dim_2 (int): Number of neurons in second hidden layer (default: 32)
+        dropout_rate (float): Dropout rate for first two hidden layers (default: 0.5)
+    """
     def __init__(self, input_dim, hidden_dim_1=64, hidden_dim_2=32, dropout_rate=0.5):
         super(MLP, self).__init__()
         self.net = nn.Sequential(
@@ -49,16 +88,42 @@ class MLP(nn.Module):
             nn.Linear(hidden_dim_2, 16),
             nn.ReLU(),
             nn.Dropout(0.2),
-            nn.Linear(16, 2)  # Output 2 classes for CrossEntropyLoss
+            nn.Linear(16, 2)  
         )
     
     def forward(self, x):
-        # Return raw logits for use with CrossEntropyLoss
+        """
+        Forward pass through the network.
+        
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch_size, input_dim)
+        
+        Returns:
+            torch.Tensor: Output logits of shape (batch_size, 2)
+        """
         return self.net(x)
 
 
 def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='mean'):
-    """Aggregate trial-level predictions to patient-level predictions."""
+    """
+    Aggregate trial-level predictions to patient-level predictions.
+    
+    Since a patient can have multiple tapping sessions/trials, this function aggregates
+    the session-level predictions to get a single prediction per patient.
+    
+    Args:
+        test_df (pd.DataFrame): Test dataframe containing healthCode column
+        test_preds_proba (list): Predicted probabilities for class 1 (PD)
+        test_preds_binary (list): Binary predictions (0 or 1)
+        test_labels (list): True labels
+        aggregation_method (str): Method to aggregate predictions. Options:
+            - 'mean': Average probability across all sessions for each patient (default)
+            - 'majority': Majority vote of binary predictions
+            - 'max': Maximum probability across all sessions
+    
+    Returns:
+        pd.DataFrame: Patient-level predictions with columns [healthCode, pred_proba, pred_binary, label]
+    """
     
     results_df = pd.DataFrame({
         'healthCode': test_df['healthCode'].values,
@@ -89,6 +154,363 @@ def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_lab
         patient_preds['pred_binary'] = (patient_preds['pred_proba'] > 0.5).astype(int)
     
     return patient_preds
+
+
+def create_results_visualization(mean_results_df, output_dir):
+    """
+    Create comprehensive visualizations of hyperparameter grid search results.
+    
+    Generates plots showing:
+    - AUC vs Hyperparameters (heatmap style)
+    - Mean metrics (accuracy, F1, AUC) across all hyperparameter combinations
+    - Error bars showing std deviation
+    
+    Args:
+        mean_results_df (pd.DataFrame): DataFrame with mean results from grid search
+        output_dir (Path): Directory to save figures
+    
+    Returns:
+        None (saves figures to output_dir)
+    """
+    
+    import matplotlib.gridspec as gridspec
+    
+    # Create output directory if it doesn't exist
+    output_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Figure 1: Performance comparison across all hyperparameter combinations
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+    fig.suptitle('MLP-v2: Hyperparameter Grid Search Results', fontsize=16, fontweight='bold')
+    
+    # Sort by AUC for better visualization
+    sorted_df = mean_results_df.sort_values('auc_mean', ascending=False).reset_index(drop=True)
+    hp_labels = [f"HP{int(idx)}" for idx in sorted_df['hp_idx']]
+    
+    # Plot 1: AUC-ROC
+    axes[0, 0].bar(range(len(sorted_df)), sorted_df['auc_mean'], 
+                   yerr=sorted_df['auc_std'], capsize=5, alpha=0.7, color='steelblue')
+    axes[0, 0].set_xlabel('Hyperparameter Configuration')
+    axes[0, 0].set_ylabel('AUC-ROC')
+    axes[0, 0].set_title('AUC-ROC Score (sorted)')
+    axes[0, 0].set_xticks(range(len(sorted_df)))
+    axes[0, 0].set_xticklabels(hp_labels, rotation=45)
+    axes[0, 0].grid(axis='y', alpha=0.3)
+    axes[0, 0].set_ylim([0, 1])
+    
+    # Plot 2: Accuracy
+    axes[0, 1].bar(range(len(sorted_df)), sorted_df['accuracy_mean'], 
+                   yerr=sorted_df['accuracy_std'], capsize=5, alpha=0.7, color='seagreen')
+    axes[0, 1].set_xlabel('Hyperparameter Configuration')
+    axes[0, 1].set_ylabel('Accuracy')
+    axes[0, 1].set_title('Accuracy (sorted by AUC)')
+    axes[0, 1].set_xticks(range(len(sorted_df)))
+    axes[0, 1].set_xticklabels(hp_labels, rotation=45)
+    axes[0, 1].grid(axis='y', alpha=0.3)
+    axes[0, 1].set_ylim([0, 1])
+    
+    # Plot 3: F1-Score
+    axes[1, 0].bar(range(len(sorted_df)), sorted_df['f1_mean'], 
+                   yerr=sorted_df['f1_std'], capsize=5, alpha=0.7, color='coral')
+    axes[1, 0].set_xlabel('Hyperparameter Configuration')
+    axes[1, 0].set_ylabel('F1-Score')
+    axes[1, 0].set_title('F1-Score (sorted by AUC)')
+    axes[1, 0].set_xticks(range(len(sorted_df)))
+    axes[1, 0].set_xticklabels(hp_labels, rotation=45)
+    axes[1, 0].grid(axis='y', alpha=0.3)
+    axes[1, 0].set_ylim([0, 1])
+    
+    # Plot 4: All metrics comparison for top 5 models
+    top_5_df = sorted_df.head(5)
+    x = np.arange(len(top_5_df))
+    width = 0.25
+    
+    axes[1, 1].bar(x - width, top_5_df['accuracy_mean'], width, label='Accuracy', alpha=0.8)
+    axes[1, 1].bar(x, top_5_df['f1_mean'], width, label='F1-Score', alpha=0.8)
+    axes[1, 1].bar(x + width, top_5_df['auc_mean'], width, label='AUC-ROC', alpha=0.8)
+    axes[1, 1].set_xlabel('Top 5 Hyperparameter Configurations')
+    axes[1, 1].set_ylabel('Score')
+    axes[1, 1].set_title('Top 5 Models - All Metrics')
+    axes[1, 1].set_xticks(x)
+    axes[1, 1].set_xticklabels([f"HP{int(idx)}" for idx in top_5_df['hp_idx']])
+    axes[1, 1].legend()
+    axes[1, 1].grid(axis='y', alpha=0.3)
+    axes[1, 1].set_ylim([0, 1])
+    
+    plt.tight_layout()
+    fig_path = output_dir / 'mlp_v2_results_comparison.png'
+    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+    print(f"✓ Results comparison figure saved to: {fig_path}")
+    plt.close()
+    
+    # Figure 2: Hyperparameter sensitivity analysis
+    fig, axes = plt.subplots(2, 3, figsize=(16, 10))
+    fig.suptitle('MLP-v2: Hyperparameter Sensitivity Analysis', fontsize=16, fontweight='bold')
+    
+    hyperparams = ['learning_rate', 'weight_decay', 'dropout_rate', 'hidden_dim_1', 'hidden_dim_2']
+    
+    for idx, param in enumerate(hyperparams):
+        row = idx // 3
+        col = idx % 3
+        ax = axes[row, col]
+        
+        # Group by hyperparameter value and calculate mean AUC
+        grouped = mean_results_df.groupby(param)['auc_mean'].agg(['mean', 'std']).reset_index()
+        grouped = grouped.sort_values(param)
+        
+        ax.errorbar(range(len(grouped)), grouped['mean'], yerr=grouped['std'], 
+                   fmt='o-', capsize=5, linewidth=2, markersize=8, color='steelblue')
+        ax.set_xlabel(param, fontweight='bold')
+        ax.set_ylabel('Mean AUC-ROC')
+        ax.set_title(f'Effect of {param}')
+        ax.set_xticks(range(len(grouped)))
+        ax.set_xticklabels(grouped[param].astype(str), rotation=45)
+        ax.grid(True, alpha=0.3)
+        ax.set_ylim([grouped['mean'].min() - 0.1, grouped['mean'].max() + 0.1])
+    
+    # Remove the extra subplot
+    fig.delaxes(axes[1, 2])
+    
+    plt.tight_layout()
+    fig_path = output_dir / 'mlp_v2_hyperparameter_sensitivity.png'
+    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
+    print(f"✓ Hyperparameter sensitivity figure saved to: {fig_path}")
+    plt.close()
+
+
+def create_best_model_summary(best_row, best_hp_results, output_dir):
+    """
+    Create a summary figure for the best model across all folds.
+    
+    Args:
+        best_row (pd.Series): Row with best hyperparameters from mean_results_df
+        best_hp_results (pd.DataFrame): Results for all folds of best hyperparameters
+        output_dir (Path): Directory to save figure
+    
+    Returns:
+        None (saves figure to output_dir)
+    """
+    
+    fig = plt.figure(figsize=(14, 8))
+    gs = gridspec.GridSpec(3, 2, figure=fig, hspace=0.3, wspace=0.3)
+    
+    # Title
+    fig.suptitle(f'Best Model Summary (HP{int(best_row["hp_idx"])})', 
+                fontsize=16, fontweight='bold')
+    
+    # Plot 1: Metrics across folds
+    ax1 = fig.add_subplot(gs[0, :])
+    folds = best_hp_results['fold'].values
+    ax1.plot(folds, best_hp_results['accuracy'].values, 'o-', linewidth=2, 
+            markersize=8, label='Accuracy', color='seagreen')
+    ax1.plot(folds, best_hp_results['f1_score'].values, 's-', linewidth=2, 
+            markersize=8, label='F1-Score', color='coral')
+    ax1.plot(folds, best_hp_results['auc'].values, '^-', linewidth=2, 
+            markersize=8, label='AUC-ROC', color='steelblue')
+    ax1.axhline(y=best_row['accuracy_mean'], color='seagreen', linestyle='--', alpha=0.5)
+    ax1.axhline(y=best_row['f1_mean'], color='coral', linestyle='--', alpha=0.5)
+    ax1.axhline(y=best_row['auc_mean'], color='steelblue', linestyle='--', alpha=0.5)
+    ax1.set_xlabel('Fold')
+    ax1.set_ylabel('Score')
+    ax1.set_title('Performance Across Folds')
+    ax1.set_xticks(folds)
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    ax1.set_ylim([0, 1])
+    
+    # Plot 2: Mean metrics with std
+    ax2 = fig.add_subplot(gs[1, 0])
+    metrics = ['Accuracy', 'F1-Score', 'AUC-ROC']
+    means = [best_row['accuracy_mean'], best_row['f1_mean'], best_row['auc_mean']]
+    stds = [best_row['accuracy_std'], best_row['f1_std'], best_row['auc_std']]
+    colors = ['seagreen', 'coral', 'steelblue']
+    
+    ax2.bar(metrics, means, yerr=stds, capsize=10, alpha=0.7, color=colors)
+    ax2.set_ylabel('Score')
+    ax2.set_title('Mean Performance ± Std Dev')
+    ax2.set_ylim([0, 1])
+    ax2.grid(axis='y', alpha=0.3)
+    
+    # Add values on bars
+    for i, (m, s) in enumerate(zip(means, stds)):
+        ax2.text(i, m + s + 0.05, f'{m:.4f}', ha='center', va='bottom', fontweight='bold')
+    
+    # Plot 3: Hyperparameter values
+    ax3 = fig.add_subplot(gs[1, 1])
+    ax3.axis('off')
+    
+    hyperparams_text = f"""
+    BEST HYPERPARAMETERS:
+    
+    Learning Rate:    {best_row['learning_rate']}
+    Weight Decay:     {best_row['weight_decay']}
+    Dropout Rate:     {best_row['dropout_rate']}
+    Hidden Dim 1:     {int(best_row['hidden_dim_1'])}
+    Hidden Dim 2:     {int(best_row['hidden_dim_2'])}
+    
+    ─────────────────────────
+    
+    MEAN PERFORMANCE:
+    
+    Accuracy:         {best_row['accuracy_mean']:.4f} ± {best_row['accuracy_std']:.4f}
+    F1-Score:         {best_row['f1_mean']:.4f} ± {best_row['f1_std']:.4f}
+    AUC-ROC:          {best_row['auc_mean']:.4f} ± {best_row['auc_std']:.4f}
+    """
+    
+    ax3.text(0.1, 0.5, hyperparams_text, fontsize=11, verticalalignment='center',
+            family='monospace', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    
+    # Plot 4: Fold-by-fold comparison
+    ax4 = fig.add_subplot(gs[2, :])
+    x = np.arange(len(best_hp_results))
+    width = 0.25
+    
+    ax4.bar(x - width, best_hp_results['accuracy'].values, width, 
+           label='Accuracy', alpha=0.8, color='seagreen')
+    ax4.bar(x, best_hp_results['f1_score'].values, width, 
+           label='F1-Score', alpha=0.8, color='coral')
+    ax4.bar(x + width, best_hp_results['auc'].values, width, 
+           label='AUC-ROC', alpha=0.8, color='steelblue')
+    
+    ax4.set_xlabel('Fold')
+    ax4.set_ylabel('Score')
+    ax4.set_title('Per-Fold Performance')
+    ax4.set_xticks(x)
+    ax4.set_xticklabels([f'Fold {int(f)}' for f in best_hp_results['fold'].values])
+    ax4.legend()
+    ax4.grid(axis='y', alpha=0.3)
+    ax4.set_ylim([0, 1])
+    
+    plt.savefig(output_dir / 'mlp_v2_best_model_summary.png', dpi=300, bbox_inches='tight')
+    print(f"✓ Best model summary figure saved to: {output_dir / 'mlp_v2_best_model_summary.png'}")
+    plt.close()
+
+
+def create_configurations_markdown(mean_results_df, output_dir, top_n=3):
+    """
+    Generate markdown analysis of top hyperparameter configurations.
+    
+    Args:
+        mean_results_df (pd.DataFrame): Mean results across all folds
+        output_dir (Path): Directory to save markdown file
+        top_n (int): Number of top configurations to include (default: 3)
+    """
+    # Sort by AUC descending
+    sorted_df = mean_results_df.sort_values('auc_mean', ascending=False)
+    
+    # Start markdown content
+    md_content = """# MLP V2 Best Configurations Analysis
+
+## Overview
+Analysis of hyperparameter search results for MLP V2 model across all folds.
+Source: `mlp_v2_hp_search_mean.csv`
+
+**Analysis Metric: AUC Score** (Area Under the Receiver Operating Characteristic Curve)
+
+---
+
+## TOP {top_n} CONFIGURATIONS (By AUC Score)
+
+""".format(top_n=top_n)
+    
+    # Rank medals
+    medals = ["🥇", "🥈", "🥉"]
+    rank_names = ["Best", "Second Best", "Third Best"]
+    
+    # Add top configurations
+    for rank, (idx, row) in enumerate(sorted_df.head(top_n).iterrows()):
+        hp_idx = int(row['hp_idx'])
+        medal = medals[rank] if rank < len(medals) else f"#{rank+1}"
+        rank_name = rank_names[rank] if rank < len(rank_names) else f"Rank {rank+1}"
+        
+        auc_mean = row['auc_mean'] * 100
+        
+        md_content += f"""### {medal} **Rank {rank+1}: HP {hp_idx}** - {rank_name} AUC ({auc_mean:.2f}%)
+- **Learning Rate:** {row['learning_rate']}
+- **Weight Decay:** {row['weight_decay']}
+- **Dropout Rate:** {row['dropout_rate']}
+- **Hidden Dimension 1:** {int(row['hidden_dim_1'])}
+- **Hidden Dimension 2:** {int(row['hidden_dim_2'])}
+- **Accuracy:** {row['accuracy_mean']*100:.2f}% ± {row['accuracy_std']*100:.2f}%
+- **F1 Score:** {row['f1_mean']*100:.2f}% ± {row['f1_std']*100:.2f}%
+- **AUC:** {auc_mean:.2f}% ± {row['auc_std']*100:.2f}% ✨
+
+---
+
+"""
+    
+    # Add summary section
+    best_row = sorted_df.iloc[0]
+    hp_idx = int(best_row['hp_idx'])
+    
+    md_content += """## Summary Statistics
+
+### Best Configuration ({}) - AUC Optimized:
+| Metric | Value |
+|--------|-------|
+| **AUC** | **{:.2f}%** (±{:.2f}%) |
+| **Accuracy** | {:.2f}% (±{:.2f}%) |
+| **F1 Score** | {:.2f}% (±{:.2f}%) |
+
+### Configuration Details:
+```
+Learning Rate:     {}
+Weight Decay:      {}
+Dropout Rate:      {}
+Hidden Layers:     {} → {}
+```
+
+---
+
+## Key Findings
+
+### Hyperparameter Preferences:
+1. **Learning Rate:** {:.2e} optimal for top performance
+2. **Weight Decay:** {:.2e} strongly preferred
+3. **Dropout Rate:** {:.1f} optimal
+4. **Hidden Dimensions:** {} → {} shows strong performance
+
+---
+
+## Recommendations
+
+### 🎯 **For Best AUC Performance:**
+**Use HP {}** 
+- Best AUC: **{:.2f}%**
+- Parameters: LR={}, WD={}, Dropout={}, Hidden=[{},{}]
+
+---
+
+*Generated automatically by MLP V2 hyperparameter search*
+""".format(
+        hp_idx,
+        best_row['auc_mean']*100, best_row['auc_std']*100,
+        best_row['accuracy_mean']*100, best_row['accuracy_std']*100,
+        best_row['f1_mean']*100, best_row['f1_std']*100,
+        best_row['learning_rate'],
+        best_row['weight_decay'],
+        best_row['dropout_rate'],
+        int(best_row['hidden_dim_1']),
+        int(best_row['hidden_dim_2']),
+        best_row['learning_rate'],
+        best_row['weight_decay'],
+        best_row['dropout_rate'],
+        int(best_row['hidden_dim_1']),
+        int(best_row['hidden_dim_2']),
+        hp_idx,
+        best_row['auc_mean']*100,
+        best_row['learning_rate'],
+        best_row['weight_decay'],
+        best_row['dropout_rate'],
+        int(best_row['hidden_dim_1']),
+        int(best_row['hidden_dim_2'])
+    )
+    
+    # Save markdown
+    md_path = output_dir / 'MLP_V2_BEST_CONFIGURATIONS.md'
+    with open(md_path, 'w') as f:
+        f.write(md_content)
+    
+    print(f"✓ Configuration analysis saved to: {md_path}")
 
 
 def create_balanced_sampler(y_train):
@@ -123,13 +545,32 @@ def create_balanced_sampler(y_train):
         replacement=True
     )
     
-    return sampler # is an object that controls how samples are selected from the training dataset 
+    return sampler
 
 
-def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparams=None, use_scheduler=True, use_balanced_sampler=True):
-    print(f"\n Model: {model_name} | Fold: {fold}")
-    print(f" ├─ Learning Rate Scheduler: {'✓ Enabled' if use_scheduler else '✗ Disabled'}")
-    print(f" └─ Balanced Sampler (50-50 Healthy/PD): {'✓ Enabled' if use_balanced_sampler else '✗ Disabled'}")
+def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparams=None, use_scheduler=True, use_balanced_sampler=True, save_model=False):
+    """
+    Train and evaluate MLP model on a single fold of cross-validation.
+    
+    Args:
+        features_df (pd.DataFrame): Combined features with columns [healthCode, trial_id, label_PD, feature_1, ...]
+        model_name (str): Name of the model configuration (e.g., 'HP0') for logging
+        model_prefix (str): Prefix for saving model files (e.g., 'hp0')
+        fold (int): Fold number in cross-validation (0-4) (default: 0)
+        hyperparams (dict): Hyperparameters with keys: learning_rate, weight_decay, dropout_rate,
+                           hidden_dim_1, hidden_dim_2. If None, uses defaults.
+        use_scheduler (bool): Whether to use ReduceLROnPlateau scheduler (default: True)
+        use_balanced_sampler (bool): Whether to use 50-50 balanced sampler (default: True)
+        save_model (bool): Whether to save model (not used in grid search) (default: False)
+    
+    Returns:
+        dict: Results dictionary containing:
+            - 'model', 'fold': Configuration info
+            - 'accuracy', 'f1_score', 'auc': Patient-level metrics
+            - 'num_patients': Number of unique patients in test set
+            - 'learning_rate', 'weight_decay', 'dropout_rate', 'hidden_dim_1', 'hidden_dim_2': Hyperparameters
+            - 'model_state': Model state dictionary for saving
+    """
     
     # Use default hyperparameters if not provided
     if hyperparams is None:
@@ -354,209 +795,191 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
         'accuracy': patient_accuracy,
         'f1_score': patient_f1,
         'auc': patient_auc,
-        'num_patients': len(patient_preds)
+        'num_patients': len(patient_preds),
+        'learning_rate': learning_rate,
+        'weight_decay': weight_decay,
+        'dropout_rate': dropout_rate,
+        'hidden_dim_1': hidden_dim_1,
+        'hidden_dim_2': hidden_dim_2,
+        'model_state': best_model_state,  # Include model state for potential saving
     }
-
-
-def create_cv_visualization(model_name, accuracy, f1_score, auc, accuracy_std, f1_score_std, auc_std, model_prefix):
-    """Create visualization for CV mean results"""
-    
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    fig.suptitle(f'{model_name} - Cross-Validation Results (Mean ± Std across 5 Folds)', 
-                 fontsize=14, fontweight='bold')
-    
-    # 1. Metrics Bar Plot with Error Bars
-    metrics = ['Accuracy', 'F1-Score', 'AUC-ROC']
-    values = [accuracy, f1_score, auc]
-    stds = [accuracy_std, f1_score_std, auc_std]
-    colors = ['#1f77b4', '#ff7f0e', '#2ca02c']
-    
-    axes[0].bar(metrics, values, yerr=stds, color=colors, alpha=0.7, edgecolor='black', 
-                capsize=10, error_kw={'linewidth': 2})
-    axes[0].set_ylabel('Score', fontsize=12)
-    axes[0].set_title('Performance Metrics (Mean ± Std)', fontsize=12)
-    axes[0].set_ylim([0, 1])
-    axes[0].grid(True, axis='y', alpha=0.3)
-    
-    for i, (v, s) in enumerate(zip(values, stds)):
-        axes[0].text(i, v + s + 0.03, f'{v:.4f}\n±{s:.4f}', ha='center', fontweight='bold', fontsize=10)
-    
-    # 2. Comparison Table
-    axes[1].axis('off')
-    table_data = [
-        ['Metric', 'Mean', 'Std Dev'],
-        ['Accuracy', f'{accuracy:.4f}', f'{accuracy_std:.4f}'],
-        ['F1-Score', f'{f1_score:.4f}', f'{f1_score_std:.4f}'],
-        ['AUC-ROC', f'{auc:.4f}', f'{auc_std:.4f}']
-    ]
-    
-    table = axes[1].table(cellText=table_data, cellLoc='center', loc='center',
-                         colWidths=[0.3, 0.3, 0.3])
-    table.auto_set_font_size(False)
-    table.set_fontsize(11)
-    table.scale(1, 2.5)
-    
-    for i in range(3):
-        table[(0, i)].set_facecolor('#4472C4')
-        table[(0, i)].set_text_props(weight='bold', color='white')
-    
-    axes[1].set_title('Detailed Results', fontsize=12, pad=20)
-    
-    plt.tight_layout()
-    
-    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
-    fig_path = output_dir / f'{model_prefix}_{model_name.replace(" ", "_")}_cv_results.png'
-    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
-    print(f"✓ CV Visualization saved: {fig_path}")
-    
-    plt.close()
 
 
 # ===== Main =====
 if __name__ == "__main__":
     
-    basic_features = pd.read_csv(basic_features_path)
-    advanced_features = pd.read_csv(advanced_features_path)
     combined_features = pd.read_csv(combined_features_path)
     
     print("\n===== Feature Sets Loaded =====")
-    print(f"Basic features shape: {basic_features.shape}")
-    print(f"Advanced features shape: {advanced_features.shape}")
     print(f"Combined features shape: {combined_features.shape}\n")
     
-    print("\n" + "="*70)
-    print("CROSS-VALIDATION WITH UPGRADED MLP")
-    print("="*70)
-    print("\n[UPGRADES ENABLED]")
-    print("  1. Learning Rate Scheduler (ReduceLROnPlateau)")
-    print("  2. Per-batch Undersampling of PD Sessions (WeightedRandomSampler)")
-    print("="*70)
+    print("\n" + "="*80)
+    print("MLP-v2: HYPERPARAMETER GRID SEARCH")
+    print("="*80)
+    print("\n[CONFIGURATION]")
+    print(f"  Hyperparameter combinations: {len(list(product(*HYPERPARAMETER_GRID.values())))}")
+    print(f"  Cross-validation folds: {NUM_FOLDS}")
+    print("="*80)
     
-    # Store results for all folds
+    # Generate all hyperparameter combinations
+    hp_combinations = list(product(*HYPERPARAMETER_GRID.values()))
+    hp_keys = list(HYPERPARAMETER_GRID.keys())
+    
+    # Store results for all combinations and folds
     all_results = []
     
-    # Hyperparameters (same as baseline)
-    best_hp_basic = {
-        'learning_rate': 1e-3,
-        'weight_decay': 1e-3,
-        'dropout_rate': 0.5,
-        'hidden_dim_1': 64,
-        'hidden_dim_2': 32,
-    }
-    best_hp_advanced = best_hp_basic.copy()
-    best_hp_combined = best_hp_basic.copy()
-    
-    # Loop through all 5 folds
-    for fold in range(NUM_FOLDS):
-        print(f"\n{'='*70}")
-        print(f"FOLD {fold}/{NUM_FOLDS - 1}")
-        print(f"{'='*70}")
+    # Loop through all hyperparameter combinations
+    for hp_idx, hp_values in enumerate(hp_combinations):
+        hyperparams = dict(zip(hp_keys, hp_values))
         
-        # Train all three models for this fold with upgrades enabled
-        fold_results = []
-        fold_results.append(train_and_evaluate(
-            basic_features, "Basic Features", "01_basic", fold=fold, 
-            hyperparams=best_hp_basic, use_scheduler=True, use_balanced_sampler=True
-        ))
-        fold_results.append(train_and_evaluate(
-            advanced_features, "Advanced Features", "02_advanced", fold=fold, 
-            hyperparams=best_hp_advanced, use_scheduler=True, use_balanced_sampler=True
-        ))
-        fold_results.append(train_and_evaluate(
-            combined_features, "Combined Features", "03_combined", fold=fold, 
-            hyperparams=best_hp_combined, use_scheduler=True, use_balanced_sampler=True
-        ))
+        print(f"\n{'='*80}")
+        print(f"HYPERPARAMETER COMBINATION {hp_idx + 1}/{len(hp_combinations)}")
+        print(f"  lr={hyperparams['learning_rate']}, wd={hyperparams['weight_decay']}, "
+              f"dr={hyperparams['dropout_rate']}, h1={hyperparams['hidden_dim_1']}, "
+              f"h2={hyperparams['hidden_dim_2']}")
+        print(f"{'='*80}")
         
-        all_results.extend(fold_results)
+        # Loop through all 5 folds
+        for fold in range(NUM_FOLDS):
+            print(f"\n  FOLD {fold}/{NUM_FOLDS - 1}")
+            
+            result = train_and_evaluate(
+                combined_features, 
+                f"HP{hp_idx}", 
+                f"hp{hp_idx}", 
+                fold=fold, 
+                hyperparams=hyperparams, 
+                use_scheduler=True, 
+                use_balanced_sampler=True
+            )
+            all_results.append(result)
     
     # Convert all results to DataFrame
     results_df = pd.DataFrame(all_results)
     
-    # Calculate mean metrics for each model
-    print("\n" + "="*70)
-    print("CROSS-VALIDATION RESULTS (Mean ± Std across 5 folds)")
-    print("="*70)
+    # Extract model states before converting to DataFrame (since state dicts can't be in DataFrame)
+    model_states = {}
+    for idx, result in enumerate(all_results):
+        key = f"{result['model']}_fold{result['fold']}"
+        model_states[key] = result.pop('model_state')
     
-    mean_data = []
-    for model_name in ["Basic Features", "Advanced Features", "Combined Features"]:
-        model_results = results_df[results_df['model'] == model_name]
+    # Calculate mean metrics for each hyperparameter combination
+    print("\n" + "="*80)
+    print("HYPERPARAMETER GRID SEARCH RESULTS")
+    print("="*80)
+    
+    mean_results = []
+    for hp_idx in range(len(hp_combinations)):
+        hp_results = results_df[results_df['model'] == f'HP{hp_idx}']
         
-        mean_accuracy = model_results['accuracy'].mean()
-        std_accuracy = model_results['accuracy'].std()
+        mean_accuracy = hp_results['accuracy'].mean()
+        std_accuracy = hp_results['accuracy'].std()
         
-        mean_f1 = model_results['f1_score'].mean()
-        std_f1 = model_results['f1_score'].std()
+        mean_f1 = hp_results['f1_score'].mean()
+        std_f1 = hp_results['f1_score'].std()
         
-        mean_auc = model_results['auc'].mean()
-        std_auc = model_results['auc'].std()
+        mean_auc = hp_results['auc'].mean()
+        std_auc = hp_results['auc'].std()
         
-        mean_data.append({
-            'model': model_name,
-            'fold': 'MEAN',
-            'accuracy': mean_accuracy,
-            'f1_score': mean_f1,
-            'auc': mean_auc,
+        hyperparams = dict(zip(hp_keys, hp_combinations[hp_idx]))
+        
+        mean_results.append({
+            'hp_idx': hp_idx,
+            'learning_rate': hyperparams['learning_rate'],
+            'weight_decay': hyperparams['weight_decay'],
+            'dropout_rate': hyperparams['dropout_rate'],
+            'hidden_dim_1': hyperparams['hidden_dim_1'],
+            'hidden_dim_2': hyperparams['hidden_dim_2'],
+            'accuracy_mean': mean_accuracy,
             'accuracy_std': std_accuracy,
-            'f1_score_std': std_f1,
+            'f1_mean': mean_f1,
+            'f1_std': std_f1,
+            'auc_mean': mean_auc,
             'auc_std': std_auc,
-            'num_patients': ''
         })
-        
-        print(f"\n{model_name}:")
-        print(f"  Accuracy:  {mean_accuracy:.4f} ± {std_accuracy:.4f}")
-        print(f"  F1-Score:  {mean_f1:.4f} ± {std_f1:.4f}")
-        print(f"  AUC-ROC:   {mean_auc:.4f} ± {std_auc:.4f}")
     
-    # Combine results
-    results_df['accuracy_std'] = ''
-    results_df['f1_score_std'] = ''
-    results_df['auc_std'] = ''
+    mean_results_df = pd.DataFrame(mean_results)
     
-    final_results_df = pd.concat([results_df, pd.DataFrame(mean_data)], ignore_index=True)
+    # Find best hyperparameters
+    best_idx = mean_results_df['auc_mean'].idxmax()
+    best_row = mean_results_df.iloc[best_idx]
+    
+    print(f"\n{mean_results_df.to_string(index=False)}\n")
+    
+    print(f"\n{'='*80}")
+    print("BEST CONFIGURATION")
+    print(f"{'='*80}")
+    print(f"Learning Rate: {best_row['learning_rate']}")
+    print(f"Weight Decay: {best_row['weight_decay']}")
+    print(f"Dropout Rate: {best_row['dropout_rate']}")
+    print(f"Hidden Dim 1: {best_row['hidden_dim_1']}")
+    print(f"Hidden Dim 2: {best_row['hidden_dim_2']}")
+    print(f"\nAccuracy: {best_row['accuracy_mean']:.4f} ± {best_row['accuracy_std']:.4f}")
+    print(f"F1-Score: {best_row['f1_mean']:.4f} ± {best_row['f1_std']:.4f}")
+    print(f"AUC-ROC:  {best_row['auc_mean']:.4f} ± {best_row['auc_std']:.4f}")
+    print(f"{'='*80}")
     
     # Save results
-    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
+    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
     output_dir.mkdir(exist_ok=True, parents=True)
     
-    model_prefixes = {
-        'Basic Features': '01_basic_upgraded',
-        'Advanced Features': '02_advanced_upgraded',
-        'Combined Features': '03_combined_upgraded'
-    }
+    # Save all fold results
+    all_csv = output_dir / f'mlp_v2_hp_search_all_folds.csv'
+    results_df.to_csv(all_csv, index=False)
+    print(f"\n✓ All fold results saved to: {all_csv}")
     
-    for model_name, prefix in model_prefixes.items():
-        model_df = final_results_df[final_results_df['model'] == model_name]
-        csv_path = output_dir / f'{prefix}_{model_name.replace(" ", "_")}_cv_results.csv'
-        model_df.to_csv(csv_path, index=False)
-        print(f"✓ Saved: {csv_path}")
+    # Save mean results
+    mean_csv = output_dir / f'mlp_v2_hp_search_mean.csv'
+    mean_results_df.to_csv(mean_csv, index=False)
+    print(f"✓ Mean results saved to: {mean_csv}")
     
-    # Save all models
-    all_csv = output_dir / 'cv_results_all_models_upgraded.csv'
-    final_results_df.to_csv(all_csv, index=False)
-    print(f"\n✓ All models saved to: {all_csv}")
+    # ===== Generate Visualizations =====
+    print("\n" + "="*80)
+    print("GENERATING VISUALIZATIONS")
+    print("="*80)
     
-    # Find best model
-    mean_results_df = final_results_df[final_results_df['fold'] == 'MEAN']
-    best_idx = mean_results_df['auc'].idxmax()
-    best_model = mean_results_df.loc[best_idx, 'model']
-    best_auc = mean_results_df.loc[best_idx, 'auc']
-    print(f"\n✓ Best model: {best_model} (AUC: {best_auc:.4f})")
+    create_results_visualization(mean_results_df, output_dir)
     
-    print("\n" + "="*70)
-    print("✓ Upgraded MLP Training Complete!")
-    print("="*70)
+    # Generate markdown configuration analysis
+    create_configurations_markdown(mean_results_df, output_dir, top_n=3)
     
-    # Generate visualizations
-    print("\nGenerating CV Mean Visualizations...")
-    for model_name, prefix in model_prefixes.items():
-        mean_row = mean_results_df[mean_results_df['model'] == model_name].iloc[0]
-        create_cv_visualization(
-            model_name=model_name,
-            accuracy=mean_row['accuracy'],
-            f1_score=mean_row['f1_score'],
-            auc=mean_row['auc'],
-            accuracy_std=mean_row['accuracy_std'],
-            f1_score_std=mean_row['f1_score_std'],
-            auc_std=mean_row['auc_std'],
-            model_prefix=prefix
-        )
+    # ===== Save Only the Best Model =====
+    print("\n" + "="*80)
+    print("SAVING BEST MODELS (ALL 5 FOLDS)")
+    print("="*80)
+    
+    best_hp_idx = int(best_row['hp_idx'])
+    best_hp_results = results_df[results_df['model'] == f'HP{best_hp_idx}']
+    
+    model_save_dir = Path('/mloscratch/users/clerget/data/saved_models')
+    model_save_dir.mkdir(exist_ok=True, parents=True)
+    
+    print(f"\nBest Hyperparameters (HP{best_hp_idx}):")
+    print(f"  Learning Rate: {best_row['learning_rate']}")
+    print(f"  Weight Decay: {best_row['weight_decay']}")
+    print(f"  Dropout Rate: {best_row['dropout_rate']}")
+    print(f"  Hidden Dim 1: {best_row['hidden_dim_1']}")
+    print(f"  Hidden Dim 2: {best_row['hidden_dim_2']}")
+    print(f"\nMean Performance:")
+    print(f"  AUC-ROC:  {best_row['auc_mean']:.4f} ± {best_row['auc_std']:.4f}")
+    print(f"  Accuracy: {best_row['accuracy_mean']:.4f} ± {best_row['accuracy_std']:.4f}")
+    print(f"  F1-Score: {best_row['f1_mean']:.4f} ± {best_row['f1_std']:.4f}")
+    
+    print(f"\nSaving all 5 folds:")
+    for _, row in best_hp_results.iterrows():
+        fold_number = int(row['fold'])
+        model_key = f"HP{best_hp_idx}_fold{fold_number}"
+        
+        if model_key in model_states:
+            model_save_path = model_save_dir / f'best_model_hp{best_hp_idx}_fold{fold_number}.pth'
+            torch.save(model_states[model_key], model_save_path)
+            print(f"  ✓ Fold {fold_number}: AUC={row['auc']:.4f}, saved to {model_save_path.name}")
+    
+    # Generate best model summary visualization
+    create_best_model_summary(best_row, best_hp_results, output_dir)
+    
+    print("="*80)
+    
+    print("\n" + "="*80)
+    print("✓ MLP-v2 Hyperparameter Grid Search Complete!")
+    print("="*80)
