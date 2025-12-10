@@ -10,14 +10,15 @@ import os
 from pathlib import Path
 from EarlyFusion.EarlyFusionCNN import EarlyFusionCNN
 from EarlyFusion.EarlyFusionMLP import EarlyFusionMLP
-
+from itertools import product
+import gc
 
 def cross_validation_5fold_early_fusion(
     features_csv,
     labels_csv,
     train_folds_csv,
     val_test_folds_csv,
-    output_dir,
+    # output_dir,
     hidden_dims=[256, 128, 64],
     batch_size=64,
     num_epochs=100,
@@ -59,7 +60,7 @@ def cross_validation_5fold_early_fusion(
             - 'model_paths': List of paths to saved .pth models (one per fold)
     """
     # Create output directory
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    # Path(output_dir).mkdir(parents=True, exist_ok=True)
     
     # Load data files
     features_df = pd.read_csv(features_csv)
@@ -122,7 +123,7 @@ def cross_validation_5fold_early_fusion(
     test_f1s = []
     test_roc_aucs = []
     confusion_matrices = []
-    model_paths = []
+    models_list = []
     
     # Perform 5-fold CV
     for fold in range(5):
@@ -235,11 +236,12 @@ def cross_validation_5fold_early_fusion(
         confusion_matrices.append(test_results['test_conf_mat'])
         
         # Save model
-        model_path = os.path.join(output_dir, f"model_fold_{fold}.pth")
-        torch.save(model.state_dict(), model_path)
-        model_paths.append(model_path)
-        if verbose:
-            print(f"\nModel saved to: {model_path}")
+        # model_path = os.path.join(output_dir, f"model_fold_{fold}.pth")
+        # torch.save(model.state_dict(), model_path)
+        models_list.append(model.state_dict())
+        # model_paths.append(model_path)
+        # if verbose:
+        #     print(f"\nModel saved to: {model_path}")
     
     # Calculate summary statistics
     results = {
@@ -252,7 +254,7 @@ def cross_validation_5fold_early_fusion(
         'mean_test_roc_auc': np.mean(test_roc_aucs),
         'std_test_roc_auc': np.std(test_roc_aucs),
         'confusion_matrices': confusion_matrices,
-        'model_paths': model_paths
+        'models_list': models_list
     }
     
     if verbose:
@@ -264,3 +266,104 @@ def cross_validation_5fold_early_fusion(
         print(f"Test ROC AUC:  {results['mean_test_roc_auc']:.4f} ± {results['std_test_roc_auc']:.4f}")
     
     return results
+
+
+def hyperparameter_tuning(
+    features_csv,
+    labels_csv,
+    train_folds_csv,
+    val_test_folds_csv,
+    output_dir,
+    hidden_dims: list[list],
+    batch_size,
+    weight_decay,
+    dropout,
+    class_weight,
+    num_epochs,
+    learning_rate,
+    verbose=True        
+):
+    hyperparameter_sets = product(hidden_dims, batch_size, weight_decay, dropout, class_weight, num_epochs, learning_rate)
+
+    if verbose:
+        print(f"Testing {len(hyperparameter_sets)} Hyperparameter Combinations", "\n")
+
+    # Creating an empty variable which will hold the results dictionary of the best model
+    best_results = None
+
+    # Tracking best Test ROC AUC throughout the tuning
+    best_ROC_AUC = 0
+
+    for hyperparam_set in hyperparameter_sets:
+        HIDDEN_LAYERS, BATCH_SIZE, WEIGHT_DECAY, DROPOUT, CLASS_WEIGHT, NUM_EPOCHS, LEARNING_RATE = hyperparam_set
+
+        if verbose: 
+            print("------------------------------")
+            print("Hyperparameters")
+            print("------------------------------")
+            print(f"Hidden Layers: {HIDDEN_LAYERS}")
+            print(f"Batch Size: {BATCH_SIZE}")
+            print(f"Weight Decay: {WEIGHT_DECAY}")
+            print(f"Dropout: {DROPOUT}")
+            print(f"Class Weight: {CLASS_WEIGHT}")
+            print(f"Num Epochs: {NUM_EPOCHS}")
+            print(f"Learning Rate: {LEARNING_RATE}")
+            print("------------------------------", "\n")
+            
+
+        hyperparam_set_res = cross_validation_5fold_early_fusion(
+            features_csv=features_csv, 
+            labels_csv=labels_csv,
+            train_folds_csv=train_folds_csv,
+            val_test_folds_csv=val_test_folds_csv,
+            # output_dir=output_dir,
+            hidden_dims=HIDDEN_LAYERS,
+            batch_size=BATCH_SIZE,
+            weight_decay=WEIGHT_DECAY,
+            dropout=DROPOUT,
+            class_weight=CLASS_WEIGHT,
+            num_epochs=NUM_EPOCHS,
+            learning_rate=LEARNING_RATE,
+            verbose=False
+        )
+
+        if verbose:
+            print("Results Summary")
+            print("------------------------------")
+            print(f"Test Accuracy: {hyperparam_set_res['mean_test_acc']:.4f} ± {hyperparam_set_res['std_test_acc']:.4f}")
+            print(f"Test F1 Score: {hyperparam_set_res['mean_test_f1']:.4f} ± {hyperparam_set_res['std_test_f1']:.4f}")
+            print(f"Test ROC AUC:  {hyperparam_set_res['mean_test_roc_auc']:.4f} ± {hyperparam_set_res['std_test_roc_auc']:.4f}")
+            print("------------------------------", "\n")
+
+        if hyperparam_set_res['mean_test_roc_auc'] >= best_ROC_AUC:
+            if verbose:
+                print("Found New Best Model!")
+                print("------------------------------", "\n")
+
+            best_results = hyperparam_set_res
+        
+        else:
+            # Force garbage collection of bad models to free up space
+            del hyperparam_set_res
+            gc.collect()
+
+    if verbose: 
+        print("End Summary")
+        print("------------------------------")
+        print(f"Best Test Accuracy: {best_results['mean_test_acc']:.4f} ± {best_results['std_test_acc']:.4f}")
+        print(f"Best Test F1 Score: {best_results['mean_test_f1']:.4f} ± {best_results['std_test_f1']:.4f}")
+        print(f"Best Test ROC AUC:  {best_results['mean_test_roc_auc']:.4f} ± {best_results['std_test_roc_auc']:.4f}")
+        print("------------------------------", "\n")
+
+    # Save best model as .pth to output_dir
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+
+    for fold in range(5):
+        model_path = os.path.join(output_dir, f"model_fold_{fold}.pth")
+        torch.save(best_results["models_list"][fold], model_path)
+
+    if verbose:
+        print(f"Saved Best Model at the following Path: {model_path}")
+
+    return best_results
