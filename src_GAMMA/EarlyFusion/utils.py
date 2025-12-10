@@ -330,6 +330,9 @@ def hyperparameter_tuning(
     if verbose:
         print(f"Testing {len(hyperparameter_sets)} Hyperparameter Combinations\n")
 
+    # Counting the number of sets we have tried so far to track progress in verbose version
+    hyperparameter_set_counter = 0
+
     # Creating an empty variable which will hold the results dictionary of the best model
     best_results = None
 
@@ -346,11 +349,13 @@ def hyperparameter_tuning(
     BEST_LEARNING_RATE = None
 
     for hyperparam_set in hyperparameter_sets:
+        hyperparameter_set_counter += 1
+
         HIDDEN_LAYERS, BATCH_SIZE, WEIGHT_DECAY, DROPOUT, CLASS_WEIGHT, NUM_EPOCHS, LEARNING_RATE = hyperparam_set
 
         if verbose: 
             print("------------------------------")
-            print("Hyperparameters")
+            print(f"Hyperparameters; set {hyperparameter_set_counter}/{len(hyperparameter_sets)}")
             print("------------------------------")
             print(f"Hidden Layers: {HIDDEN_LAYERS}")
             print(f"Batch Size: {BATCH_SIZE}")
