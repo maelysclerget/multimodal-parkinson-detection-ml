@@ -98,22 +98,26 @@ class EarlyFusionMLP(nn.Module):
             epochs: int = 50, batch_size: int = 32, class_weight: float = 2.0, 
             lr: float = 1e-3, weight_decay: float = 0, verbose: bool = True):
         """
-        Fit the model on training data.
+        Fit the model on training data with early stopping and learning rate reduction.
         
         Args:
             train_features: Training features (N, input_dim)
             train_labels: Training labels (N,)
             val_features: Validation features (N_val, input_dim) (optional)
             val_labels: Validation labels (N_val,) (optional)
-            epochs: Number of training epochs (default: 50)
+            epochs: Maximum number of training epochs (default: 50)
             batch_size: Batch size (default: 32)
             class_weight: Weight for class 0 (controls) to handle imbalance (default: 2)
-            lr: Learning rate (default: 1e-3)
+            lr: Initial learning rate (default: 1e-3)
             weight_decay: L2 penalization coefficient (default: 0)
             verbose: Whether the method should output verbal execution tracing (default: True)
             
         Returns:
             val_loss_history: List of validation losses per epoch (if validation data provided), else None
+            
+        Note:
+            - Early stopping: Training stops if validation loss doesn't decrease for 20 consecutive epochs
+            - LR scheduling: Learning rate is halved if validation loss doesn't decrease for 10 consecutive epochs
         """
         # Reset history
         self.train_loss_history = []
@@ -127,6 +131,14 @@ class EarlyFusionMLP(nn.Module):
         class_weights = torch.FloatTensor([class_weight, 1.0]).to(self.device)
         criterion = nn.CrossEntropyLoss(weight=class_weights)
         optimizer = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
+        
+        # Early stopping and LR scheduling parameters
+        best_val_loss = float('inf')
+        epochs_no_improve = 0
+        epochs_no_improve_lr = 0
+        early_stopping_patience = 40
+        lr_reduction_patience = 10
+        current_lr = lr
         
         for epoch in range(epochs):
             self.train()
@@ -164,11 +176,36 @@ class EarlyFusionMLP(nn.Module):
                     val_loss = criterion(val_logits, val_labels_device).item()
                     val_loss_history.append(val_loss)
                     
+                    # Check for improvement
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        epochs_no_improve = 0
+                        epochs_no_improve_lr = 0
+                    else:
+                        epochs_no_improve += 1
+                        epochs_no_improve_lr += 1
+                        
+                        # Learning rate reduction
+                        if epochs_no_improve_lr >= lr_reduction_patience:
+                            current_lr = current_lr / 2
+                            for param_group in optimizer.param_groups:
+                                param_group['lr'] = current_lr
+                            if verbose:
+                                print(f"Learning rate reduced to {current_lr:.6f}")
+                            epochs_no_improve_lr = 0
+                        
+                        # Early stopping
+                        if epochs_no_improve >= early_stopping_patience:
+                            if verbose:
+                                print(f"Early stopping triggered at epoch {epoch+1}. "
+                                      f"No improvement for {early_stopping_patience} epochs.")
+                            break
+                    
                     if verbose and (epoch + 1) % 10 == 0:
                         val_preds = self.predict(val_features_device).cpu().numpy()
                         val_acc = accuracy_score(val_labels.cpu().numpy(), val_preds)
                         print(f"Epoch {epoch+1}/{epochs} | Train Loss: {epoch_loss:.4f} | Train Acc: {epoch_acc:.4f} | "
-                              f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f}")
+                              f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | LR: {current_lr:.6f}")
             else:
                 if verbose and (epoch + 1) % 10 == 0:
                     print(f"Epoch {epoch+1}/{epochs} | Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.4f}")

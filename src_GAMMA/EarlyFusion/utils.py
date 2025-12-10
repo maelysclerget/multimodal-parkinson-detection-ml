@@ -18,7 +18,7 @@ def cross_validation_5fold_early_fusion(
     train_folds_csv,
     val_test_folds_csv,
     output_dir,
-    hidden_dims=[256, 128, 64, 32, 16, 8, 4],
+    hidden_dims=[256, 128, 64, 32],
     batch_size=64,
     num_epochs=100,
     learning_rate=0.001,
