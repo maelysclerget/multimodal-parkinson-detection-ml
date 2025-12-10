@@ -18,223 +18,247 @@ def cross_validation_5fold_early_fusion(
     train_folds_csv,
     val_test_folds_csv,
     output_dir,
-    hidden_dims=[256, 128, 64, 32],
+    hidden_dims=[256, 128, 64],
     batch_size=64,
     num_epochs=100,
     learning_rate=0.001,
-    weight_decay=0.0,
-    dropout=0.5,
+    weight_decay=0.01,
+    dropout=0.3,
     class_weight=3.0,
     verbose=True
 ):
     """
-    Perform 5-fold cross-validation training for early fusion models.
+    Perform 5-fold cross-validation training for early fusion MLP models.
     
     Args:
-        features_csv: Path to CSV file containing features (first 3 columns are patient IDs, rest are features)
-        labels_csv: Path to CSV file containing labels in 'label_PD' column and 'healthcode' for patient IDs
-        train_folds_csv: Path to CSV file with 'healthcode', 'fold_iteration', and 'subset' (='train') columns
+        features_csv: Path to CSV file containing features with 'healthCode' column
+        labels_csv: Path to CSV file containing labels in 'label_PD' column and 'healthCode' for patient IDs
+        train_folds_csv: Path to CSV file with 'healthCode', 'fold_iteration', and 'subset' columns
         val_test_folds_csv: Path to CSV file with 'healthCode', 'fold_iteration', and 'subset' (='val'/'test') columns
-        output_dir: Directory to save model checkpoints and results
+        output_dir: Directory to save model checkpoints (.pth files)
         hidden_dims: List of hidden layer dimensions (default: [256, 128, 64])
         batch_size: Batch size for training (default: 64)
-        num_epochs: Number of training epochs (default: 100)
-        learning_rate: Learning rate for optimizer (default: 0.001)
-        weight_decay: L2 regularization weight decay (default: 0.0)
-        dropout: Dropout rate (default: 0.5)
-        class_weight: Weight for positive class in loss function (default: 1.0)
+        num_epochs: Maximum number of training epochs (default: 100)
+        learning_rate: Initial learning rate for optimizer (default: 0.001)
+        weight_decay: L2 regularization weight decay (default: 0.01)
+        dropout: Dropout rate (default: 0.3)
+        class_weight: Weight for class 0 (controls) to handle imbalance (default: 3.0)
         verbose: Whether to print training progress (default: True)
         
     Returns:
-        tuple: (best_model_path, metrics_history) where:
-            - best_model_path (str): Path to the best model saved as .pth file
-            - metrics_history (dict): Dictionary with metrics from all folds, containing:
-                - 'folds': List of fold numbers (0-4)
-                - 'test_loss': List of test losses per fold
-                - 'test_acc': List of test accuracies per fold
-                - 'test_f1': List of test F1 scores per fold
-                - 'test_roc_auc': List of test ROC AUC scores per fold
-                - 'test_conf_mat': List of confusion matrices per fold
-                - 'test_roc_curve': List of ROC curves per fold
+        dict: Dictionary with summary statistics and per-fold results:
+            - 'mean_test_loss': Mean test loss across folds
+            - 'std_test_loss': Standard deviation of test loss
+            - 'mean_test_acc': Mean test accuracy across folds
+            - 'std_test_acc': Standard deviation of test accuracy
+            - 'mean_test_f1': Mean test F1 score across folds
+            - 'std_test_f1': Standard deviation of test F1 score
+            - 'mean_test_roc_auc': Mean test ROC AUC across folds
+            - 'std_test_roc_auc': Standard deviation of test ROC AUC
+            - 'confusion_matrices': List of 5 confusion matrices (one per fold)
+            - 'model_paths': List of paths to saved .pth models (one per fold)
     """
     # Create output directory
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     
-    # Load data
+    # Load data files
     features_df = pd.read_csv(features_csv)
     labels_df = pd.read_csv(labels_csv)
     train_folds_df = pd.read_csv(train_folds_csv)
     val_test_folds_df = pd.read_csv(val_test_folds_csv)
     
-    # Extract features (skip first 3 columns which contain patient ID information)
-    feature_columns = features_df.columns[3:]
+    if verbose:
+        print(f"Loaded features: {features_df.shape}")
+        print(f"  Columns: {list(features_df.columns[:5])}...")
+        print(f"Loaded labels: {labels_df.shape}")
+        print(f"  Columns: {list(labels_df.columns)}")
+        print(f"Train folds: {train_folds_df.shape}")
+        print(f"  Columns: {list(train_folds_df.columns)}")
+        print(f"Val+Test folds: {val_test_folds_df.shape}")
+        print(f"  Columns: {list(val_test_folds_df.columns)}")
     
-    # Create label mapping
-    labels_healthcodes = labels_df['healthCode'].values
-    labels_values = labels_df['label_PD'].values
-    label_map = {hc: label for hc, label in zip(labels_healthcodes, labels_values)}
-    
-    input_dim = len(feature_columns)
+    # Separate val and test based on 'subset' column
+    val_folds_df = val_test_folds_df[val_test_folds_df['subset'] == 'val']
+    test_folds_df = val_test_folds_df[val_test_folds_df['subset'] == 'test']
     
     if verbose:
-        print(f"{'='*50}")
-        print(f"5-Fold Cross-Validation with")
-        print(f"{'='*50}")
-        print(f"Input dimension: {input_dim}")
-        print(f"Hidden dimensions: {hidden_dims}")
-        print(f"Total samples in features: {len(features_df)}")
+        print(f"  - Validation folds: {val_folds_df.shape}")
+        print(f"  - Test folds: {test_folds_df.shape}")
     
-    # Device setup
+    # Rename 'healthcode' to 'healthCode' for consistency if needed
+    if 'healthcode' in features_df.columns and 'healthCode' not in features_df.columns:
+        features_df = features_df.rename(columns={'healthcode': 'healthCode'})
+        if verbose:
+            print(f"Renamed 'healthcode' → 'healthCode' for consistency")
+    
+    # Merge features with labels on healthCode
+    features_df = features_df.merge(labels_df[['healthCode', 'label_PD']], on='healthCode', how='inner')
+    if verbose:
+        print(f"Features after merging with labels: {features_df.shape}")
+    
+    # Filter to only include healthcodes in 5-fold splits
+    all_fold_healthcodes = set(train_folds_df['healthCode'].unique()) | set(val_test_folds_df['healthCode'].unique())
+    features_df = features_df[features_df['healthCode'].isin(all_fold_healthcodes)]
+    if verbose:
+        print(f"Features after filtering to 5-fold healthcodes: {features_df.shape}")
+    
+    # Prepare feature columns (exclude metadata)
+    metadata_cols = ['filename', 'healthCode', 'record_id', 'label_PD', 'trial_id']
+    feature_cols = [col for col in features_df.columns if col not in metadata_cols]
+    if verbose:
+        print(f"Number of features: {len(feature_cols)}")
+        print(f"Feature columns: {feature_cols[:5]}... (showing first 5)")
+    
+    # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     if verbose:
-        print(f"Device: {device}")
+        print(f"Using device: {device}\n")
     
-    fold_results = []
-    best_model_path = None
-    best_fold_score = -np.inf
-    
-    # Initialize metrics history
-    metrics_history = {
-        'folds': [],
-        'test_loss': [],
-        'test_acc': [],
-        'test_f1': [],
-        'test_roc_auc': [],
-        'test_conf_mat': [],
-        'test_roc_curve': []
-    }
+    # Initialize storage for results
+    test_losses = []
+    test_accs = []
+    test_f1s = []
+    test_roc_aucs = []
+    confusion_matrices = []
+    model_paths = []
     
     # Perform 5-fold CV
     for fold in range(5):
         if verbose:
             print(f"\n{'='*50}")
-            print(f"Fold {fold + 1}/5")
+            print(f"Fold {fold}/4 (Fold iteration {fold})")
             print(f"{'='*50}")
         
-        # Get train healthcodes for this fold
-        train_fold_mask = (train_folds_df['fold_iteration'] == fold) & (train_folds_df['subset'] == 'train')
-        train_healthcodes = train_folds_df[train_fold_mask]['healthCode'].values
-        
-        # Get test healthcodes for this fold (using 'healthCode' column name)
-        test_fold_mask = (val_test_folds_df['fold_iteration'] == fold) & (val_test_folds_df['subset'] == 'test')
-        test_healthcodes = val_test_folds_df[test_fold_mask]['healthCode'].values
-        
-        # Filter features_df to include ALL trials for the healthcodes in train/test sets
-        train_mask = features_df['healthcode'].isin(train_healthcodes) & features_df['healthcode'].isin(label_map.keys())
-        test_mask = features_df['healthcode'].isin(test_healthcodes) & features_df['healthcode'].isin(label_map.keys())
-        
-        train_df = features_df[train_mask]
-        test_df = features_df[test_mask]
-        
-        # Extract features for all trials
-        X_train_raw = train_df[feature_columns].values
-        X_test_raw = test_df[feature_columns].values
-        
-        # Standardize features using training data statistics
-        scaler = StandardScaler()
-        X_train = scaler.fit_transform(X_train_raw)
-        X_test = scaler.transform(X_test_raw)
-        
-        # Get labels for all trials
-        y_train = np.array([label_map[hc] for hc in train_df['healthcode'].values], dtype=np.float32)
-        y_test = np.array([label_map[hc] for hc in test_df['healthcode'].values], dtype=np.float32)
+        # Get unique patient healthCodes for this fold
+        train_patient_ids = train_folds_df[train_folds_df['fold_iteration'] == fold]['healthCode'].values
+        val_patient_ids = val_folds_df[val_folds_df['fold_iteration'] == fold]['healthCode'].values
+        test_patient_ids = test_folds_df[test_folds_df['fold_iteration'] == fold]['healthCode'].values
         
         if verbose:
-            print(f"Train: {len(np.unique(train_healthcodes))} unique healthcodes, {len(X_train)} total trials")
-            print(f"Test: {len(np.unique(test_healthcodes))} unique healthcodes, {len(X_test)} total trials")
-            print(f"Train label distribution: {np.bincount(y_train.astype(int))}")
-            print(f"Test label distribution: {np.bincount(y_test.astype(int))}")
+            print(f"Train patients: {len(train_patient_ids)}")
+            print(f"Val patients: {len(val_patient_ids)}")
+            print(f"Test patients: {len(test_patient_ids)}")
         
-        # Initialize model based on NN_type
+        # Split data by patient healthCode
+        train_data = features_df[features_df['healthCode'].isin(train_patient_ids)]
+        val_data = features_df[features_df['healthCode'].isin(val_patient_ids)]
+        test_data = features_df[features_df['healthCode'].isin(test_patient_ids)]
         
+        if verbose:
+            print(f"Train samples: {len(train_data)}")
+            print(f"Val samples: {len(val_data)}")
+            print(f"Test samples: {len(test_data)}")
+        
+        # Extract features and labels
+        X_train = train_data[feature_cols].values.astype(np.float32)
+        y_train = train_data['label_PD'].values
+        X_val = val_data[feature_cols].values.astype(np.float32)
+        y_val = val_data['label_PD'].values
+        X_test = test_data[feature_cols].values.astype(np.float32)
+        y_test = test_data['label_PD'].values
+        
+        # Handle NaN values
+        X_train = np.nan_to_num(X_train, nan=0.0, posinf=0.0, neginf=0.0)
+        X_val = np.nan_to_num(X_val, nan=0.0, posinf=0.0, neginf=0.0)
+        X_test = np.nan_to_num(X_test, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # Normalize features using StandardScaler (fit on train, transform on val/test)
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train)
+        X_val = scaler.transform(X_val)
+        X_test = scaler.transform(X_test)
+        
+        # Convert to tensors
+        X_train_tensor = torch.tensor(X_train, dtype=torch.float32)
+        y_train_tensor = torch.tensor(y_train, dtype=torch.long)
+        X_val_tensor = torch.tensor(X_val, dtype=torch.float32)
+        y_val_tensor = torch.tensor(y_val, dtype=torch.long)
+        
+        # Initialize model
         model = EarlyFusionMLP(
-            input_dim=input_dim,
+            input_dim=X_train.shape[1],
             hidden_dims=hidden_dims,
-            dropout=dropout
+            dropout=dropout,
+            verbose=False
         )
         
         # Train model
         if verbose:
-            print(f"Training MLP model...")
+            print(f"\n{'='*50}")
+            print("Training EarlyFusionMLP...")
+            print(f"{'='*50}")
         
         model.fit(
-            X_train, y_train,
+            X_train_tensor,
+            y_train_tensor,
+            val_features=X_val_tensor,
+            val_labels=y_val_tensor,
             epochs=num_epochs,
-            batch_size=batch_size,
             class_weight=class_weight,
+            batch_size=batch_size,
             lr=learning_rate,
             weight_decay=weight_decay,
             verbose=verbose
         )
         
-        # Test model
+        # Test model with majority voting per patient
         if verbose:
-            print(f"Evaluating MLP model...")
+            print(f"\n{'='*50}")
+            print("Testing EarlyFusionMLP with Majority Voting...")
+            print(f"{'='*50}")
         
-        test_metrics = model.test(X_test, y_test)
+        # Prepare test dataframe with standardized features
+        test_data_standardized = test_data.copy()
+        test_data_standardized[feature_cols] = X_test
         
-        # Store metrics in history
-        metrics_history['folds'].append(fold)
-        metrics_history['test_loss'].append(test_metrics['test_loss'])
-        metrics_history['test_acc'].append(test_metrics['test_acc'])
-        metrics_history['test_f1'].append(test_metrics['test_f1'])
-        metrics_history['test_roc_auc'].append(test_metrics['test_roc_auc'])
-        metrics_history['test_conf_mat'].append(test_metrics['test_conf_mat'])
-        metrics_history['test_roc_curve'].append(test_metrics['test_roc_curve'])
+        # Use the test_with_majority_counting method
+        test_results = model.test_with_majority_counting(test_data_standardized)
         
+        # Display results
         if verbose:
-            print(f"Fold {fold + 1} Test Results:")
-            for metric_name, metric_value in test_metrics.items():
-                if metric_name not in ['test_conf_mat', 'test_roc_curve']:
-                    print(f"  {metric_name}: {metric_value:.4f}")
+            print(f"\nPatient-level Results (Majority Voting):")
+            print(f"  Number of patients: {test_results['num_patients']}")
+            print(f"  Number of trials: {test_results['num_trials']}")
+            print(f"  Test Accuracy: {test_results['test_acc']:.4f}")
+            print(f"  Test F1 Score: {test_results['test_f1']:.4f}")
+            print(f"  Test ROC AUC: {test_results['test_roc_auc']:.4f}")
+            print(f"\nConfusion Matrix:\n{test_results['test_conf_mat']}")
         
-        fold_results.append({
-            'fold': fold,
-            'model': model,
-            'metrics': test_metrics
-        })
+        # Store results
+        # Note: test_with_majority_counting doesn't return test_loss, so we'll use a placeholder
+        test_losses.append(0.0)  # Placeholder - majority voting doesn't have a direct loss value
+        test_accs.append(test_results['test_acc'])
+        test_f1s.append(test_results['test_f1'])
+        test_roc_aucs.append(test_results['test_roc_auc'])
+        confusion_matrices.append(test_results['test_conf_mat'])
         
-        # Track best fold
-        primary_metric = test_metrics.get('test_f1', test_metrics.get('test_acc', 0))
-        if primary_metric > best_fold_score:
-            best_fold_score = primary_metric
-            best_model_path = os.path.join(output_dir, f"best_model_fold_{fold}.pth")
-            torch.save(model.state_dict(), best_model_path)
+        # Save model
+        model_path = os.path.join(output_dir, f"model_fold_{fold}.pth")
+        torch.save(model.state_dict(), model_path)
+        model_paths.append(model_path)
+        if verbose:
+            print(f"\nModel saved to: {model_path}")
     
-    # Save best model
-    if best_model_path is None:
-        best_model_path = os.path.join(output_dir, "best_model.pth")
-        torch.save(fold_results[0]['model'].state_dict(), best_model_path)
+    # Calculate summary statistics
+    results = {
+        'mean_test_loss': np.mean(test_losses),
+        'std_test_loss': np.std(test_losses),
+        'mean_test_acc': np.mean(test_accs),
+        'std_test_acc': np.std(test_accs),
+        'mean_test_f1': np.mean(test_f1s),
+        'std_test_f1': np.std(test_f1s),
+        'mean_test_roc_auc': np.mean(test_roc_aucs),
+        'std_test_roc_auc': np.std(test_roc_aucs),
+        'confusion_matrices': confusion_matrices,
+        'model_paths': model_paths
+    }
     
-    # Compute and print summary
     if verbose:
-        _print_cv_summary(fold_results)
+        print(f"\n{'='*50}")
+        print("5-Fold Cross-Validation Summary")
+        print(f"{'='*50}")
+        print(f"Test Accuracy: {results['mean_test_acc']:.4f} ± {results['std_test_acc']:.4f}")
+        print(f"Test F1 Score: {results['mean_test_f1']:.4f} ± {results['std_test_f1']:.4f}")
+        print(f"Test ROC AUC:  {results['mean_test_roc_auc']:.4f} ± {results['std_test_roc_auc']:.4f}")
     
-    return best_model_path, metrics_history
-
-
-def _print_cv_summary(fold_results):
-    """
-    Print summary of cross-validation results.
-    
-    Args:
-        fold_results: List of fold results dictionaries
-    """
-    print(f"\n{'='*50}")
-    print("5-Fold CV Results Summary")
-    print(f"{'='*50}")
-    
-    # Collect all metrics
-    metric_keys = fold_results[0]['metrics'].keys()
-    metric_dict = {key: [] for key in metric_keys}
-    
-    for fold_result in fold_results:
-        for key, value in fold_result['metrics'].items():
-            metric_dict[key].append(value)
-    
-    # Print mean and std for each metric (skip non-numeric metrics)
-    for metric_name, values in metric_dict.items():
-        if metric_name not in ['test_conf_mat', 'test_roc_curve']:
-            mean_val = np.mean(values)
-            std_val = np.std(values)
-            print(f"{metric_name}: {mean_val:.4f} ± {std_val:.4f}")
+    return results

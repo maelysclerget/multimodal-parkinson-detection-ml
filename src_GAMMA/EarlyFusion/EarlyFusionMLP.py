@@ -98,7 +98,7 @@ class EarlyFusionMLP(nn.Module):
             epochs: int = 50, batch_size: int = 32, class_weight: float = 2.0, 
             lr: float = 1e-3, weight_decay: float = 0, verbose: bool = True):
         """
-        Fit the model on training data with early stopping and learning rate reduction.
+        Fit the model on training data with early stopping and learning rate reduction based on ROC AUC.
         
         Args:
             train_features: Training features (N, input_dim)
@@ -116,8 +116,8 @@ class EarlyFusionMLP(nn.Module):
             val_loss_history: List of validation losses per epoch (if validation data provided), else None
             
         Note:
-            - Early stopping: Training stops if validation loss doesn't decrease for 20 consecutive epochs
-            - LR scheduling: Learning rate is halved if validation loss doesn't decrease for 10 consecutive epochs
+            - Early stopping: Training stops if validation ROC AUC doesn't increase for 40 consecutive epochs
+            - LR scheduling: Learning rate is halved if validation ROC AUC doesn't increase for 10 consecutive epochs
         """
         # Reset history
         self.train_loss_history = []
@@ -132,8 +132,8 @@ class EarlyFusionMLP(nn.Module):
         criterion = nn.CrossEntropyLoss(weight=class_weights)
         optimizer = torch.optim.Adam(self.parameters(), lr=lr, weight_decay=weight_decay)
         
-        # Early stopping and LR scheduling parameters
-        best_val_loss = float('inf')
+        # Early stopping and LR scheduling parameters based on ROC AUC
+        best_val_auc = -float('inf')
         epochs_no_improve = 0
         epochs_no_improve_lr = 0
         early_stopping_patience = 40
@@ -176,9 +176,14 @@ class EarlyFusionMLP(nn.Module):
                     val_loss = criterion(val_logits, val_labels_device).item()
                     val_loss_history.append(val_loss)
                     
-                    # Check for improvement
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
+                    # Calculate ROC AUC for early stopping and LR scheduling
+                    val_probs = torch.softmax(val_logits, dim=1)[:, 1].cpu().numpy()
+                    val_labels_np = val_labels.cpu().numpy()
+                    val_auc = roc_auc_score(val_labels_np, val_probs)
+                    
+                    # Check for improvement based on ROC AUC
+                    if val_auc > best_val_auc:
+                        best_val_auc = val_auc
                         epochs_no_improve = 0
                         epochs_no_improve_lr = 0
                     else:
@@ -198,14 +203,14 @@ class EarlyFusionMLP(nn.Module):
                         if epochs_no_improve >= early_stopping_patience:
                             if verbose:
                                 print(f"Early stopping triggered at epoch {epoch+1}. "
-                                      f"No improvement for {early_stopping_patience} epochs.")
+                                      f"No improvement in ROC AUC for {early_stopping_patience} epochs.")
                             break
                     
                     if verbose and (epoch + 1) % 10 == 0:
                         val_preds = self.predict(val_features_device).cpu().numpy()
                         val_acc = accuracy_score(val_labels.cpu().numpy(), val_preds)
                         print(f"Epoch {epoch+1}/{epochs} | Train Loss: {epoch_loss:.4f} | Train Acc: {epoch_acc:.4f} | "
-                              f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | LR: {current_lr:.6f}")
+                              f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f} | LR: {current_lr:.6f}")
             else:
                 if verbose and (epoch + 1) % 10 == 0:
                     print(f"Epoch {epoch+1}/{epochs} | Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.4f}")
