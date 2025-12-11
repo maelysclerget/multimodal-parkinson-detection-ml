@@ -449,6 +449,204 @@ def hyperparameter_tuning(
     return best_results
 
 
+def hyperparameter_tuning_intermediate_fusion(
+    audio_features_csv,
+    tapping_features_csv,
+    labels_csv,
+    train_folds_csv,
+    val_test_folds_csv,
+    output_dir,
+    hidden_dims: list[list],
+    audio_branch: list[dict],
+    tapping_branch: list[dict],
+    batch_size,
+    weight_decay,
+    dropout,
+    class_weight,
+    num_epochs,
+    learning_rate,
+    verbose=True        
+):
+    """
+    Perform hyperparameter tuning using grid search for intermediate fusion models.
+    
+    Evaluates all combinations of hyperparameters using 5-fold cross-validation and selects
+    the best model based on mean test ROC AUC score. The best model's state dictionaries
+    for all 5 folds are saved to the output directory.
+    
+    Args:
+        audio_features_csv: Path to CSV file containing audio features with 'healthCode' column
+        tapping_features_csv: Path to CSV file containing tapping features with 'healthCode' column
+        labels_csv: Path to CSV file containing labels in 'label_PD' column and 'healthCode' for patient IDs
+        train_folds_csv: Path to CSV file with 'healthCode', 'fold_iteration', and 'subset' columns
+        val_test_folds_csv: Path to CSV file with 'healthCode', 'fold_iteration', and 'subset' (='val'/'test') columns
+        output_dir: Directory to save the best model checkpoints (.pth files for each fold)
+        hidden_dims: List of hidden layer dimension configurations for fusion MLP (e.g., [[256, 128, 64], [512, 256]])
+        audio_branch: List of dicts with 'output_dim' and 'hidden_dims' for audio branch (e.g., [{"output_dim": 64, "hidden_dims": [256, 128]}])
+        tapping_branch: List of dicts with 'output_dim' and 'hidden_dims' for tapping branch (e.g., [{"output_dim": 64, "hidden_dims": [128, 64]}])
+        batch_size: List of batch sizes to test (e.g., [32, 64])
+        weight_decay: List of L2 regularization coefficients to test (e.g., [0.0, 0.01])
+        dropout: List of dropout rates to test (e.g., [0.3, 0.5, 0.8])
+        class_weight: List of class weights for handling class imbalance (e.g., [1, 2, 3])
+        num_epochs: List of maximum training epoch values to test (e.g., [100, 150])
+        learning_rate: List of initial learning rates to test (e.g., [0.001, 0.0001])
+        verbose: Whether to print training progress and results (default: True)
+        
+    Returns:
+        dict: Dictionary containing the best model's results with the following keys:
+            - 'mean_test_acc': Mean test accuracy across 5 folds
+            - 'std_test_acc': Standard deviation of test accuracy
+            - 'mean_test_f1': Mean test F1 score across 5 folds
+            - 'std_test_f1': Standard deviation of test F1 score
+            - 'mean_test_roc_auc': Mean test ROC AUC across 5 folds
+            - 'std_test_roc_auc': Standard deviation of test ROC AUC
+            - 'confusion_matrices': List of 5 confusion matrices (one per fold)
+            - 'models_list': List of 5 model state dictionaries (one per fold)
+            
+    Note:
+        - Grid search evaluates all possible combinations of the provided hyperparameters
+        - Total combinations = len(hidden_dims) × len(audio_branch) × len(tapping_branch) × 
+                               len(batch_size) × len(weight_decay) × len(dropout) × 
+                               len(class_weight) × len(num_epochs) × len(learning_rate)
+        - Models not selected as best are deleted from memory using garbage collection
+        - Selection criterion: highest mean test ROC AUC across 5 folds
+        - Early stopping and learning rate scheduling are applied based on validation ROC AUC
+    """
+    # Convert product iterator to list to allow multiple iterations
+    hyperparameter_sets = list(product(hidden_dims, audio_branch, tapping_branch, batch_size, 
+                                      weight_decay, dropout, class_weight, num_epochs, learning_rate))
+
+    if verbose:
+        print(f"Testing {len(hyperparameter_sets)} Hyperparameter Combinations\n")
+
+    # Counting the number of sets we have tried so far to track progress in verbose version
+    hyperparameter_set_counter = 0
+
+    # Creating an empty variable which will hold the results dictionary of the best model
+    best_results = None
+
+    # Tracking best Test ROC AUC throughout the tuning
+    best_ROC_AUC = 0
+
+    # Tracking best hyperparameters
+    BEST_HIDDEN_LAYERS = None
+    BEST_AUDIO_BRANCH = None
+    BEST_TAPPING_BRANCH = None
+    BEST_BATCH_SIZE = None
+    BEST_WEIGHT_DECAY = None
+    BEST_DROPOUT = None
+    BEST_CLASS_WEIGHT = None
+    BEST_NUM_EPOCHS = None
+    BEST_LEARNING_RATE = None
+
+    for hyperparam_set in hyperparameter_sets:
+        hyperparameter_set_counter += 1
+
+        HIDDEN_LAYERS, AUDIO_BRANCH, TAPPING_BRANCH, BATCH_SIZE, WEIGHT_DECAY, DROPOUT, CLASS_WEIGHT, NUM_EPOCHS, LEARNING_RATE = hyperparam_set
+
+        if verbose: 
+            print("------------------------------")
+            print(f"Hyperparameters; set {hyperparameter_set_counter}/{len(hyperparameter_sets)}")
+            print("------------------------------")
+            print(f"Fusion Hidden Layers: {HIDDEN_LAYERS}")
+            print(f"Audio Branch: {AUDIO_BRANCH}")
+            print(f"Tapping Branch: {TAPPING_BRANCH}")
+            print(f"Batch Size: {BATCH_SIZE}")
+            print(f"Weight Decay: {WEIGHT_DECAY}")
+            print(f"Dropout: {DROPOUT}")
+            print(f"Class Weight: {CLASS_WEIGHT}")
+            print(f"Num Epochs: {NUM_EPOCHS}")
+            print(f"Learning Rate: {LEARNING_RATE}")
+            print("------------------------------", "\n")
+            
+
+        hyperparam_set_res = cross_validation_5fold_intermediate_fusion(
+            audio_features_csv=audio_features_csv,
+            tapping_features_csv=tapping_features_csv,
+            labels_csv=labels_csv,
+            train_folds_csv=train_folds_csv,
+            val_test_folds_csv=val_test_folds_csv,
+            hidden_dims=HIDDEN_LAYERS,
+            audio_branch=AUDIO_BRANCH,
+            tapping_branch=TAPPING_BRANCH,
+            batch_size=BATCH_SIZE,
+            weight_decay=WEIGHT_DECAY,
+            dropout=DROPOUT,
+            class_weight=CLASS_WEIGHT,
+            num_epochs=NUM_EPOCHS,
+            learning_rate=LEARNING_RATE,
+            verbose=False
+        )
+
+        if verbose:
+            print("Results Summary")
+            print("------------------------------")
+            print(f"Test Accuracy: {hyperparam_set_res['mean_test_acc']:.4f} ± {hyperparam_set_res['std_test_acc']:.4f}")
+            print(f"Test F1 Score: {hyperparam_set_res['mean_test_f1']:.4f} ± {hyperparam_set_res['std_test_f1']:.4f}")
+            print(f"Test ROC AUC:  {hyperparam_set_res['mean_test_roc_auc']:.4f} ± {hyperparam_set_res['std_test_roc_auc']:.4f}")
+            print("------------------------------", "\n")
+
+        if hyperparam_set_res['mean_test_roc_auc'] >= best_ROC_AUC:
+            if verbose:
+                print("Found New Best Model!")
+                print("------------------------------", "\n")
+
+            best_results = hyperparam_set_res
+            best_ROC_AUC = hyperparam_set_res['mean_test_roc_auc']
+
+            BEST_HIDDEN_LAYERS = HIDDEN_LAYERS
+            BEST_AUDIO_BRANCH = AUDIO_BRANCH
+            BEST_TAPPING_BRANCH = TAPPING_BRANCH
+            BEST_BATCH_SIZE = BATCH_SIZE
+            BEST_WEIGHT_DECAY = WEIGHT_DECAY
+            BEST_DROPOUT = DROPOUT  
+            BEST_CLASS_WEIGHT = CLASS_WEIGHT
+            BEST_NUM_EPOCHS = NUM_EPOCHS
+            BEST_LEARNING_RATE = LEARNING_RATE
+
+        
+        else:
+            # Force garbage collection of bad models to free up space
+            del hyperparam_set_res
+            gc.collect()
+
+    if verbose: 
+        print("------------------------------")
+        print("End Summary")
+        print("------------------------------")
+        print("Hyperparameters")
+        print("------------------------------")
+        print(f"Fusion Hidden Layers: {BEST_HIDDEN_LAYERS}")
+        print(f"Audio Branch: {BEST_AUDIO_BRANCH}")
+        print(f"Tapping Branch: {BEST_TAPPING_BRANCH}")
+        print(f"Batch Size: {BEST_BATCH_SIZE}")
+        print(f"Weight Decay: {BEST_WEIGHT_DECAY}")
+        print(f"Dropout: {BEST_DROPOUT}")
+        print(f"Class Weight: {BEST_CLASS_WEIGHT}")
+        print(f"Num Epochs: {BEST_NUM_EPOCHS}")
+        print(f"Learning Rate: {BEST_LEARNING_RATE}")
+        print("------------------------------")
+        print("Best Model Results")
+        print("------------------------------")
+        print(f"Best Test Accuracy: {best_results['mean_test_acc']:.4f} ± {best_results['std_test_acc']:.4f}")
+        print(f"Best Test F1 Score: {best_results['mean_test_f1']:.4f} ± {best_results['std_test_f1']:.4f}")
+        print(f"Best Test ROC AUC:  {best_results['mean_test_roc_auc']:.4f} ± {best_results['std_test_roc_auc']:.4f}")
+        print("------------------------------", "\n")
+
+    # Save best model as .pth to output_dir
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+
+    for fold in range(5):
+        model_path = os.path.join(output_dir, f"model_fold_{fold}.pth")
+        torch.save(best_results["models_list"][fold], model_path)
+
+    if verbose:
+        print(f"Saved Best Model at the following Path: {model_path}")
+
+    return best_results
+
+
 def cross_validation_5fold_intermediate_fusion(
     audio_features_csv,
     tapping_features_csv,
