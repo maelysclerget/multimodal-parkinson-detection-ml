@@ -248,7 +248,8 @@ class IntermediateFusionMLP(nn.Module):
                         val_preds = self.predict(val_audio_device, val_tapping_device).cpu().numpy()
                         val_acc = accuracy_score(val_labels.cpu().numpy(), val_preds)
                         print(f"Epoch {epoch+1}/{epochs} | Train Loss: {epoch_loss:.4f} | Train Acc: {epoch_acc:.4f} | "
-                              f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f} | LR: {current_lr:.6f}")
+                              f"Val Loss: {val_loss:.4f} | Val Acc: {val_acc:.4f} | Val AUC: {val_auc:.4f} | LR: {current_lr:.6f} | "
+                              f"Best AUC: {best_val_auc:.4f} | No improve: {epochs_no_improve}")
             else:
                 if verbose and (epoch + 1) % 10 == 0:
                     print(f"Epoch {epoch+1}/{epochs} | Loss: {epoch_loss:.4f} | Acc: {epoch_acc:.4f}")
@@ -259,7 +260,7 @@ class IntermediateFusionMLP(nn.Module):
         
         return val_loss_history if val_audio_features is not None else None
 
-    def test_with_majority_counting(self, test_df):
+    def test_with_majority_counting(self, audio_df, tapping_df, labels_df):
         """
         Evaluate the model on test data with majority voting aggregation per patient.
         
@@ -267,10 +268,12 @@ class IntermediateFusionMLP(nn.Module):
         patient-level predictions and metrics.
         
         Args:
-            test_df: Pandas DataFrame containing feature columns plus 'healthCode' and 'label_PD'.
-                    Each row represents one trial. Multiple trials may exist per patient (healthCode).
-                    Features should include both audio and tapping features with appropriate prefixes
-                    or column names to distinguish them.
+            audio_df: Pandas DataFrame containing audio feature columns plus 'healthCode'.
+                     Each row represents one trial. Multiple trials may exist per patient (healthCode).
+            tapping_df: Pandas DataFrame containing tapping feature columns plus 'healthCode'.
+                       Each row represents one trial. Must have same length and healthCode ordering as audio_df.
+            labels_df: Pandas DataFrame containing 'healthCode' and 'label_PD' columns.
+                      One row per unique patient with their ground truth label.
                     
         Returns:
             Dictionary containing:
@@ -284,38 +287,36 @@ class IntermediateFusionMLP(nn.Module):
                 - num_trials: Total number of trials
                 
         Note:
-            The 'healthCode' and 'label_PD' columns are excluded from features during forward pass.
+            The 'healthCode' column is used to match trials with patient labels.
             Majority voting is applied across all trials for each healthCode to determine the
             final patient-level prediction. Instance variables (TP, TN, FP, FN, test_acc, 
             test_f1, test_auc) are updated with patient-level metrics.
         """
         
-        # Make a copy to avoid modifying the original dataframe
-        test_df_copy = test_df.copy()
+        # Make copies to avoid modifying the original dataframes
+        audio_df_copy = audio_df.copy()
+        tapping_df_copy = tapping_df.copy()
+        labels_df_copy = labels_df.copy()
         
-        # Extract healthCode and label_PD before dropping them
-        healthcodes = test_df_copy['healthCode'].values
-        true_labels = test_df_copy['label_PD'].values
+        # Extract healthCode from audio_df
+        healthcodes = audio_df_copy['healthCode'].values
+        
+        # Create a mapping from healthCode to label_PD
+        label_map = dict(zip(labels_df_copy['healthCode'], labels_df_copy['label_PD']))
+        
+        # Map healthcodes to their true labels
+        true_labels = np.array([label_map[hc] for hc in healthcodes])
         
         # Drop healthCode, label_PD, and any other metadata columns to get only numeric features
         # Metadata columns commonly include: filename, record_id, healthCode, label_PD
         metadata_columns = ['healthCode', 'label_PD', 'filename', 'record_id', 'healthcode', 'row_id', 'trial_id',
                           'filename_file1', 'filename_file2', 'record_id_file1', 'record_id_file2']
-        feature_columns = [col for col in test_df_copy.columns if col not in metadata_columns]
         
-        # Split features into audio and tapping based on column names
-        # Assuming audio features have 'audio' prefix and tapping features have 'tapping' prefix
-        audio_columns = [col for col in feature_columns if 'audio' in col.lower()]
-        tapping_columns = [col for col in feature_columns if 'tapping' in col.lower() or 'tap' in col.lower()]
+        audio_feature_columns = [col for col in audio_df_copy.columns if col not in metadata_columns]
+        tapping_feature_columns = [col for col in tapping_df_copy.columns if col not in metadata_columns]
         
-        # If no prefixes found, split features evenly (this is a fallback)
-        if not audio_columns or not tapping_columns:
-            mid_point = len(feature_columns) // 2
-            audio_columns = feature_columns[:mid_point]
-            tapping_columns = feature_columns[mid_point:]
-        
-        audio_features = test_df_copy[audio_columns].values.astype(np.float32)
-        tapping_features = test_df_copy[tapping_columns].values.astype(np.float32)
+        audio_features = audio_df_copy[audio_feature_columns].values.astype(np.float32)
+        tapping_features = tapping_df_copy[tapping_feature_columns].values.astype(np.float32)
         
         # Convert to torch tensors
         audio_features_tensor = torch.FloatTensor(audio_features).to(self.device)
@@ -363,7 +364,7 @@ class IntermediateFusionMLP(nn.Module):
             "test_roc_curve": roc_curve(y_true, y_probs_class1),
             "patient_predictions": patient_predictions,  # Include detailed results
             "num_patients": len(patient_predictions),
-            "num_trials": len(test_df_copy)
+            "num_trials": len(audio_df_copy)
         }
         
         # Store confusion matrix components

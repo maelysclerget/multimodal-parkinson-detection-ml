@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 from EarlyFusion.EarlyFusionCNN import EarlyFusionCNN
 from EarlyFusion.EarlyFusionMLP import EarlyFusionMLP
+from EarlyFusion.IntermediateFusionMLP import IntermediateFusionMLP
 from itertools import product
 import gc
 
@@ -446,3 +447,321 @@ def hyperparameter_tuning(
         print(f"Saved Best Model at the following Path: {model_path}")
 
     return best_results
+
+
+def cross_validation_5fold_intermediate_fusion(
+    audio_features_csv,
+    tapping_features_csv,
+    labels_csv,
+    train_folds_csv,
+    val_test_folds_csv,
+    hidden_dims=[256, 128, 64],
+    audio_branch=None,
+    tapping_branch=None,
+    batch_size=64,
+    num_epochs=100,
+    learning_rate=0.001,
+    weight_decay=0.01,
+    dropout=0.3,
+    class_weight=3.0,
+    verbose=True
+):
+    """
+    Perform 5-fold cross-validation training for intermediate fusion MLP models.
+    
+    Args:
+        audio_features_csv: Path to CSV file containing audio features with 'healthCode' column
+        tapping_features_csv: Path to CSV file containing tapping features with 'healthCode' column
+        labels_csv: Path to CSV file containing labels in 'label_PD' column and 'healthCode' for patient IDs
+        train_folds_csv: Path to CSV file with 'healthCode', 'fold_iteration', and 'subset' columns
+        val_test_folds_csv: Path to CSV file with 'healthCode', 'fold_iteration', and 'subset' (='val'/'test') columns
+        hidden_dims: List of hidden layer dimensions for fusion MLP (default: [256, 128, 64])
+        audio_branch: Dict with 'input_dim', 'output_dim', 'hidden_dims' for audio branch (default: None - auto-inferred)
+        tapping_branch: Dict with 'input_dim', 'output_dim', 'hidden_dims' for tapping branch (default: None - auto-inferred)
+        batch_size: Batch size for training (default: 64)
+        num_epochs: Maximum number of training epochs (default: 100)
+        learning_rate: Initial learning rate for optimizer (default: 0.001)
+        weight_decay: L2 regularization weight decay (default: 0.01)
+        dropout: Dropout rate (default: 0.3)
+        class_weight: Weight for class 0 (controls) to handle imbalance (default: 3.0)
+        verbose: Whether to print training progress (default: True)
+        
+    Returns:
+        dict: Dictionary with summary statistics and per-fold results:
+            - 'mean_test_loss': Mean test loss across folds
+            - 'std_test_loss': Standard deviation of test loss
+            - 'mean_test_acc': Mean test accuracy across folds
+            - 'std_test_acc': Standard deviation of test accuracy
+            - 'mean_test_f1': Mean test F1 score across folds
+            - 'std_test_f1': Standard deviation of test F1 score
+            - 'mean_test_roc_auc': Mean test ROC AUC across folds
+            - 'std_test_roc_auc': Standard deviation of test ROC AUC
+            - 'confusion_matrices': List of 5 confusion matrices (one per fold)
+            - 'models_list': List of model state dictionaries (one per fold)
+    """
+    # Load data files
+    audio_features_df = pd.read_csv(audio_features_csv)
+    tapping_features_df = pd.read_csv(tapping_features_csv)
+    labels_df = pd.read_csv(labels_csv)
+    train_folds_df = pd.read_csv(train_folds_csv)
+    val_test_folds_df = pd.read_csv(val_test_folds_csv)
+    
+    if verbose:
+        print(f"Loaded audio features: {audio_features_df.shape}")
+        print(f"  Columns: {list(audio_features_df.columns[:5])}...")
+        print(f"Loaded tapping features: {tapping_features_df.shape}")
+        print(f"  Columns: {list(tapping_features_df.columns[:5])}...")
+        print(f"Loaded labels: {labels_df.shape}")
+        print(f"  Columns: {list(labels_df.columns)}")
+        print(f"Train folds: {train_folds_df.shape}")
+        print(f"  Columns: {list(train_folds_df.columns)}")
+        print(f"Val+Test folds: {val_test_folds_df.shape}")
+        print(f"  Columns: {list(val_test_folds_df.columns)}")
+    
+    # Separate val and test based on 'subset' column
+    val_folds_df = val_test_folds_df[val_test_folds_df['subset'] == 'val']
+    test_folds_df = val_test_folds_df[val_test_folds_df['subset'] == 'test']
+    
+    if verbose:
+        print(f"  - Validation folds: {val_folds_df.shape}")
+        print(f"  - Test folds: {test_folds_df.shape}")
+    
+    # Rename 'healthcode' to 'healthCode' for consistency if needed
+    for df in [audio_features_df, tapping_features_df]:
+        if 'healthcode' in df.columns and 'healthCode' not in df.columns:
+            df.rename(columns={'healthcode': 'healthCode'}, inplace=True)
+            if verbose:
+                print(f"Renamed 'healthcode' → 'healthCode' for consistency")
+    
+    # Merge features with labels on healthCode
+    audio_features_df = audio_features_df.merge(labels_df[['healthCode', 'label_PD']], on='healthCode', how='inner')
+    tapping_features_df = tapping_features_df.merge(labels_df[['healthCode', 'label_PD']], on='healthCode', how='inner')
+    
+    if verbose:
+        print(f"Audio features after merging with labels: {audio_features_df.shape}")
+        print(f"Tapping features after merging with labels: {tapping_features_df.shape}")
+    
+    # Filter to only include healthcodes in 5-fold splits
+    all_fold_healthcodes = set(train_folds_df['healthCode'].unique()) | set(val_test_folds_df['healthCode'].unique())
+    audio_features_df = audio_features_df[audio_features_df['healthCode'].isin(all_fold_healthcodes)]
+    tapping_features_df = tapping_features_df[tapping_features_df['healthCode'].isin(all_fold_healthcodes)]
+    
+    if verbose:
+        print(f"Audio features after filtering to 5-fold healthcodes: {audio_features_df.shape}")
+        print(f"Tapping features after filtering to 5-fold healthcodes: {tapping_features_df.shape}")
+    
+    # Prepare feature columns (exclude metadata)
+    metadata_cols = ['filename', 'healthCode', 'record_id', 'label_PD', 'trial_id', 'row_id', 
+                     'filename_file1', 'filename_file2', 'record_id_file1', 'record_id_file2']
+    audio_feature_cols = [col for col in audio_features_df.columns if col not in metadata_cols]
+    tapping_feature_cols = [col for col in tapping_features_df.columns if col not in metadata_cols]
+    
+    if verbose:
+        print(f"Number of audio features: {len(audio_feature_cols)}")
+        print(f"Audio feature columns: {audio_feature_cols[:5]}... (showing first 5)")
+        print(f"Number of tapping features: {len(tapping_feature_cols)}")
+        print(f"Tapping feature columns: {tapping_feature_cols[:5]}... (showing first 5)")
+    
+    # Device configuration
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if verbose:
+        print(f"Using device: {device}\n")
+    
+    # Initialize storage for results
+    test_losses = []
+    test_accs = []
+    test_f1s = []
+    test_roc_aucs = []
+    confusion_matrices = []
+    models_list = []
+    
+    # Perform 5-fold CV
+    for fold in range(5):
+        if verbose:
+            print(f"\n{'='*50}")
+            print(f"Fold {fold + 1}/5 (Fold iteration {fold + 1})")
+            print(f"{'='*50}")
+        
+        # Get unique patient healthCodes for this fold
+        train_patient_ids = train_folds_df[train_folds_df['fold_iteration'] == fold]['healthCode'].values
+        val_patient_ids = val_folds_df[val_folds_df['fold_iteration'] == fold]['healthCode'].values
+        test_patient_ids = test_folds_df[test_folds_df['fold_iteration'] == fold]['healthCode'].values
+        
+        if verbose:
+            print(f"Train patients: {len(train_patient_ids)}")
+            print(f"Val patients: {len(val_patient_ids)}")
+            print(f"Test patients: {len(test_patient_ids)}")
+        
+        # Split data by patient healthCode
+        train_audio = audio_features_df[audio_features_df['healthCode'].isin(train_patient_ids)]
+        val_audio = audio_features_df[audio_features_df['healthCode'].isin(val_patient_ids)]
+        test_audio = audio_features_df[audio_features_df['healthCode'].isin(test_patient_ids)]
+        
+        train_tapping = tapping_features_df[tapping_features_df['healthCode'].isin(train_patient_ids)]
+        val_tapping = tapping_features_df[tapping_features_df['healthCode'].isin(val_patient_ids)]
+        test_tapping = tapping_features_df[tapping_features_df['healthCode'].isin(test_patient_ids)]
+        
+        if verbose:
+            print(f"Train audio samples: {len(train_audio)}")
+            print(f"Train tapping samples: {len(train_tapping)}")
+            print(f"Val audio samples: {len(val_audio)}")
+            print(f"Val tapping samples: {len(val_tapping)}")
+            print(f"Test audio samples: {len(test_audio)}")
+            print(f"Test tapping samples: {len(test_tapping)}")
+        
+        # Extract features and labels
+        X_train_audio = train_audio[audio_feature_cols].values.astype(np.float32)
+        X_train_tapping = train_tapping[tapping_feature_cols].values.astype(np.float32)
+        y_train = train_audio['label_PD'].values
+        
+        X_val_audio = val_audio[audio_feature_cols].values.astype(np.float32)
+        X_val_tapping = val_tapping[tapping_feature_cols].values.astype(np.float32)
+        y_val = val_audio['label_PD'].values
+        
+        X_test_audio = test_audio[audio_feature_cols].values.astype(np.float32)
+        X_test_tapping = test_tapping[tapping_feature_cols].values.astype(np.float32)
+        y_test = test_audio['label_PD'].values
+        
+        # Handle NaN values
+        X_train_audio = np.nan_to_num(X_train_audio, nan=0.0, posinf=0.0, neginf=0.0)
+        X_train_tapping = np.nan_to_num(X_train_tapping, nan=0.0, posinf=0.0, neginf=0.0)
+        X_val_audio = np.nan_to_num(X_val_audio, nan=0.0, posinf=0.0, neginf=0.0)
+        X_val_tapping = np.nan_to_num(X_val_tapping, nan=0.0, posinf=0.0, neginf=0.0)
+        X_test_audio = np.nan_to_num(X_test_audio, nan=0.0, posinf=0.0, neginf=0.0)
+        X_test_tapping = np.nan_to_num(X_test_tapping, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        # Normalize features using StandardScaler (fit on train, transform on val/test)
+        scaler_audio = StandardScaler()
+        X_train_audio = scaler_audio.fit_transform(X_train_audio)
+        X_val_audio = scaler_audio.transform(X_val_audio)
+        X_test_audio = scaler_audio.transform(X_test_audio)
+        
+        scaler_tapping = StandardScaler()
+        X_train_tapping = scaler_tapping.fit_transform(X_train_tapping)
+        X_val_tapping = scaler_tapping.transform(X_val_tapping)
+        X_test_tapping = scaler_tapping.transform(X_test_tapping)
+        
+        # Convert to tensors
+        X_train_audio_tensor = torch.tensor(X_train_audio, dtype=torch.float32)
+        X_train_tapping_tensor = torch.tensor(X_train_tapping, dtype=torch.float32)
+        y_train_tensor = torch.tensor(y_train, dtype=torch.long)
+        
+        X_val_audio_tensor = torch.tensor(X_val_audio, dtype=torch.float32)
+        X_val_tapping_tensor = torch.tensor(X_val_tapping, dtype=torch.float32)
+        y_val_tensor = torch.tensor(y_val, dtype=torch.long)
+        
+        # Auto-configure branch architectures if not provided
+        if audio_branch is None:
+            audio_branch_config = {
+                "input_dim": X_train_audio_tensor.shape[1],
+                "output_dim": 64,
+                "hidden_dims": [256, 128]
+            }
+        else:
+            # Create a copy to avoid modifying the original dict
+            audio_branch_config = audio_branch.copy()
+            audio_branch_config["input_dim"] = X_train_audio_tensor.shape[1]
+        
+        if tapping_branch is None:
+            tapping_branch_config = {
+                "input_dim": X_train_tapping_tensor.shape[1],
+                "output_dim": 64,
+                "hidden_dims": [128, 64]
+            }
+        else:
+            # Create a copy to avoid modifying the original dict
+            tapping_branch_config = tapping_branch.copy()
+            tapping_branch_config["input_dim"] = X_train_tapping_tensor.shape[1]
+        
+        # Initialize model
+        model = IntermediateFusionMLP(
+            hidden_dims=hidden_dims,
+            dropout=dropout,
+            audio_branch=audio_branch_config,
+            tapping_branch=tapping_branch_config
+        )
+        
+        # Train model
+        if verbose:
+            print(f"\n{'='*50}")
+            print("Training IntermediateFusionMLP...")
+            print(f"{'='*50}")
+        
+        model.fit(
+            X_train_audio_tensor,
+            X_train_tapping_tensor,
+            y_train_tensor,
+            val_audio_features=X_val_audio_tensor,
+            val_tapping_features=X_val_tapping_tensor,
+            val_labels=y_val_tensor,
+            epochs=num_epochs,
+            class_weight=class_weight,
+            batch_size=batch_size,
+            lr=learning_rate,
+            weight_decay=weight_decay,
+            verbose=verbose
+        )
+        
+        # Test model with majority voting at patient level
+        if verbose:
+            print(f"\n{'='*50}")
+            print("Testing IntermediateFusionMLP with Majority Voting...")
+            print(f"{'='*50}")
+
+        # Build separate test dataframes with standardized features
+        test_audio_standardized = test_audio.copy()
+        test_audio_standardized[audio_feature_cols] = X_test_audio
+        
+        test_tapping_standardized = test_tapping.copy()
+        test_tapping_standardized[tapping_feature_cols] = X_test_tapping
+        
+        # Construct labels_df for this fold (one row per patient)
+        test_labels_df = test_audio[['healthCode', 'label_PD']].drop_duplicates().reset_index(drop=True)
+
+        # Use majority voting per healthCode with separate audio and tapping dataframes
+        test_results = model.test_with_majority_counting(test_audio_standardized, test_tapping_standardized, test_labels_df)
+
+        # Display patient-level results
+        if verbose:
+            print(f"\nPatient-level Results (Majority Voting):")
+            print(f"  Number of patients: {test_results['num_patients']}")
+            print(f"  Number of trials: {test_results['num_trials']}")
+            print(f"  Test Accuracy: {test_results['test_acc']:.4f}")
+            print(f"  Test F1 Score: {test_results['test_f1']:.4f}")
+            print(f"  Test ROC AUC: {test_results['test_roc_auc']:.4f}")
+            print(f"\nConfusion Matrix:\n{test_results['test_conf_mat']}")
+
+        # Store results (test loss not defined for majority voting)
+        test_losses.append(0.0)
+        test_accs.append(test_results['test_acc'])
+        test_f1s.append(test_results['test_f1'])
+        test_roc_aucs.append(test_results['test_roc_auc'])
+        confusion_matrices.append(test_results['test_conf_mat'])
+        
+        # Save model state dict
+        models_list.append(model.state_dict())
+    
+    # Calculate summary statistics
+    results = {
+        'mean_test_loss': np.mean(test_losses),
+        'std_test_loss': np.std(test_losses),
+        'mean_test_acc': np.mean(test_accs),
+        'std_test_acc': np.std(test_accs),
+        'mean_test_f1': np.mean(test_f1s),
+        'std_test_f1': np.std(test_f1s),
+        'mean_test_roc_auc': np.mean(test_roc_aucs),
+        'std_test_roc_auc': np.std(test_roc_aucs),
+        'confusion_matrices': confusion_matrices,
+        'models_list': models_list
+    }
+    
+    if verbose:
+        print(f"\n{'='*50}")
+        print("5-Fold Cross-Validation Summary")
+        print(f"{'='*50}")
+        print(f"Test Loss:     {results['mean_test_loss']:.4f} ± {results['std_test_loss']:.4f}")
+        print(f"Test Accuracy: {results['mean_test_acc']:.4f} ± {results['std_test_acc']:.4f}")
+        print(f"Test F1 Score: {results['mean_test_f1']:.4f} ± {results['std_test_f1']:.4f}")
+        print(f"Test ROC AUC:  {results['mean_test_roc_auc']:.4f} ± {results['std_test_roc_auc']:.4f}")
+    
+    return results
