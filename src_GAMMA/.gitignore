@@ -40,3 +40,5 @@ models/
 # CSVs 
 paired_healthcode.csv 
 fusion_features.csv 
+intermediate_features_audio.csv
+intermediate_features_tapping.csv
