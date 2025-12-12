@@ -107,6 +107,7 @@ def cross_validation_5fold_early_fusion(
     # Prepare feature columns (exclude metadata)
     # Define all possible metadata columns
     metadata_cols = ['filename', 'healthCode', 'record_id', 'label_PD', 'trial_id', 'row_id', 
+                     'trial_id_file1', 'trial_id_file2', 'trial_id_spec', 'trial_id_heatmap',
                      'filename_file1', 'filename_file2', 'record_id_file1', 'record_id_file2']
     feature_cols = [col for col in features_df.columns if col not in metadata_cols]
     if verbose:

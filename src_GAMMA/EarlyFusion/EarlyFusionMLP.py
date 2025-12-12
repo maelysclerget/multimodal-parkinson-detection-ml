@@ -128,7 +128,7 @@ class EarlyFusionMLP(nn.Module):
         
         # Create data loader
         dataset = TensorDataset(train_features, train_labels)
-        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
         class_weights = torch.FloatTensor([class_weight, 1.0]).to(self.device)
         criterion = nn.CrossEntropyLoss(weight=class_weights)
@@ -261,8 +261,9 @@ class EarlyFusionMLP(nn.Module):
         
         # Drop healthCode, label_PD, and any other metadata columns to get only numeric features
         # Metadata columns commonly include: filename, record_id, healthCode, label_PD
-        metadata_columns = ['healthCode', 'label_PD', 'filename', 'record_id', 'healthcode', 'row_id', 'trial_id',
-                          'filename_file1', 'filename_file2', 'record_id_file1', 'record_id_file2']
+        metadata_columns = ['filename', 'healthCode', 'record_id', 'label_PD', 'trial_id', 'row_id', 
+                     'trial_id_file1', 'trial_id_file2', 'trial_id_spec', 'trial_id_heatmap',
+                     'filename_file1', 'filename_file2', 'record_id_file1', 'record_id_file2']
         feature_columns = [col for col in test_df_copy.columns if col not in metadata_columns]
         test_features = test_df_copy[feature_columns].values
         
