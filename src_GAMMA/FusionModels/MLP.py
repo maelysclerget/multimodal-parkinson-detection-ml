@@ -7,7 +7,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, roc_curve, confusion_matrix
 
 
-class EarlyFusionMLP(nn.Module):
+class MLP(nn.Module):
     def __init__(self, 
                  input_dim: int = 1280,
                  hidden_dims: list = [512, 256],
