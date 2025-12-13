@@ -22,7 +22,7 @@ class WaveformDataset(Dataset):
     """
     Dataset for loading audio waveforms from .npy files
     """
-    def __init__(self, file_paths, labels, health_codes, max_length=441000):
+    def __init__(self, file_paths, labels, health_codes, max_length=445000):
         """
         Args:
             file_paths: List of paths to .npy waveform files
@@ -781,7 +781,7 @@ if __name__ == "__main__":
     """
     
     # Paths
-    WAVEFORM_DIR = "/mloscratch/users/gnahas/data/waveform_norm"
+    WAVEFORM_DIR = "/mloscratch/users/gnahas/data/waveform_norm_silence_trimmed"
     LABEL_CSV = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
     TRAIN_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
     VAL_TEST_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"

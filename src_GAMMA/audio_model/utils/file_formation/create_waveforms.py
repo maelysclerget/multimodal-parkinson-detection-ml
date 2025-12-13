@@ -23,12 +23,55 @@ import glob
 from collections import defaultdict
 import random
 
-def load_and_normalize_waveform(wav_path):
+def trim_silence(waveform, threshold_db=-40, frame_length=2048, hop_length=512):
     """
-    Load a WAV file and return normalized waveform
+    Trim silence from the beginning and end of the waveform
+    
+    Args:
+        waveform: Input audio waveform
+        threshold_db: Threshold in dB below which audio is considered silence
+        frame_length: Frame size for energy calculation
+        hop_length: Hop size between frames
+        
+    Returns:
+        Trimmed waveform
+    """
+    # Convert threshold from dB to amplitude
+    threshold = 10 ** (threshold_db / 20)
+    
+    # Calculate energy for each frame
+    energy = np.array([
+        np.sqrt(np.mean(waveform[i:i+frame_length]**2))
+        for i in range(0, len(waveform) - frame_length + 1, hop_length)
+    ])
+    
+    # Find non-silent frames
+    non_silent = energy > threshold
+    
+    if not np.any(non_silent):
+        # If all frames are silent, return original waveform
+        return waveform
+    
+    # Find first and last non-silent frame
+    non_silent_indices = np.where(non_silent)[0]
+    start_frame = non_silent_indices[0]
+    end_frame = non_silent_indices[-1]
+    
+    # Convert frame indices to sample indices
+    start_sample = start_frame * hop_length
+    end_sample = min(end_frame * hop_length + frame_length, len(waveform))
+    
+    return waveform[start_sample:end_sample]
+
+
+def load_and_normalize_waveform(wav_path, trim_silence_flag=True, silence_threshold_db=-40):
+    """
+    Load a WAV file and return normalized waveform with silence trimming
     
     Args:
         wav_path: Path to WAV file
+        trim_silence_flag: Whether to trim silence from beginning/end
+        silence_threshold_db: Threshold in dB for silence detection (default: -40)
         
     Returns:
         Normalized waveform array (values in [-1, 1])
@@ -41,14 +84,24 @@ def load_and_normalize_waveform(wav_path):
         - Array length = duration_seconds × sample_rate
         - Example: 10-second audio at 16000 Hz = array of 160,000 values
         
-    Normalization:
-        - Waveform is loaded and automatically normalized by soundfile to [-1, 1]
-        - Further normalized by dividing by max absolute value
+    Normalization steps:
+        1. Load waveform (soundfile normalizes to [-1, 1])
+        2. Trim silence from beginning and end (optional)
+        3. Normalize amplitude to [-1, 1] range
         - All files are mono (single channel)
+        
+    Note on windowing/stride:
+        - NOT done in this file
+        - These are hyperparameters for your model's dataloader
+        - Apply windowing when loading .npy files during training
     """
     # Load audio - soundfile automatically normalizes to [-1, 1]
     # All files are mono, so waveform is a 1D array
     waveform, sample_rate = sf.read(wav_path, dtype='float32')
+    
+    # Trim silence if enabled
+    if trim_silence_flag:
+        waveform = trim_silence(waveform, threshold_db=silence_threshold_db)
     
     # Ensure normalization to [-1, 1] range
     max_val = np.abs(waveform).max()
@@ -110,7 +163,8 @@ def process_single_wav_example(wav_path, output_dir):
     return waveform, sample_rate
 
 
-def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=None, seed=42):
+def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=None, seed=42, 
+                                trim_silence=True, silence_threshold_db=-40):
     """
     Process all WAV files (no limit on recordings per healthCode)
     
@@ -119,9 +173,14 @@ def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=N
         output_dir: Directory to save normalized waveforms (.npy)
         max_records_per_patient: Not used (kept for compatibility)
         seed: Random seed (not used when no sampling)
+        trim_silence: Whether to trim silence from audio
+        silence_threshold_db: Threshold in dB for silence detection
     """
     print(f"\n{'='*80}")
     print("Processing ALL WAV files (no patient limits)")
+    print(f"Silence trimming: {'ENABLED' if trim_silence else 'DISABLED'}")
+    if trim_silence:
+        print(f"Silence threshold: {silence_threshold_db} dB")
     print(f"{'='*80}\n")
     
     # Find all WAV files
@@ -193,7 +252,11 @@ def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=N
             basename = file_info['basename']
             
             # Load and normalize
-            waveform, sample_rate = load_and_normalize_waveform(wav_path)
+            waveform, sample_rate = load_and_normalize_waveform(
+                wav_path, 
+                trim_silence_flag=trim_silence,
+                silence_threshold_db=silence_threshold_db
+            )
             
             # Save as .npy
             output_path = os.path.join(output_dir, f"{basename}.npy")
@@ -220,7 +283,11 @@ def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=N
 if __name__ == "__main__":
     # Configuration
     INPUT_DIR = "/mloscratch/users/gnahas/data/wav"
-    OUTPUT_DIR = "/mloscratch/users/gnahas/data/waveform_norm"
+    OUTPUT_DIR = "/mloscratch/users/gnahas/data/waveform_norm_silence_trimmed"
+    
+    # Silence trimming parameters
+    TRIM_SILENCE = True  # Set to False to disable silence trimming
+    SILENCE_THRESHOLD_DB = -40  # Adjust threshold: -40 (moderate), -30 (aggressive), -50 (conservative)
     
     print("="*80)
     print("WAV to Normalized Waveform Converter")
@@ -229,8 +296,13 @@ if __name__ == "__main__":
     print(f"  - Input directory: {INPUT_DIR}")
     print(f"  - Output directory: {OUTPUT_DIR}")
     print(f"  - Processing: ALL files (no limit per patient)")
+    print(f"  - Silence trimming: {'ENABLED' if TRIM_SILENCE else 'DISABLED'}")
+    if TRIM_SILENCE:
+        print(f"  - Silence threshold: {SILENCE_THRESHOLD_DB} dB")
     print(f"\nNormalization: Waveforms normalized to [-1.0, 1.0] range")
     print(f"Output format: .npy files (NumPy arrays)")
+    print(f"\nNote: Windowing & stride are NOT in this file.")
+    print(f"      Add them as hyperparameters in your model's dataloader/dataset class.")
     print()
     
     # Example: Process one file first (if files exist)
@@ -248,5 +320,7 @@ if __name__ == "__main__":
     
     # Uncomment the line below to process all files
     # (Comment it out to only process the single example file)
-    process_all_wavs_with_limit(INPUT_DIR, OUTPUT_DIR)
+    process_all_wavs_with_limit(INPUT_DIR, OUTPUT_DIR, 
+                                trim_silence=TRIM_SILENCE,
+                                silence_threshold_db=SILENCE_THRESHOLD_DB)
     
