@@ -32,3 +32,8 @@ class MLP(nn.Module):
             nn.Dropout(0.2),
             nn.Linear(16, 2)  
         )
+
+    def forward(self, x):
+        """Forward pass that returns logits for two classes."""
+        return self.net(x)
+    

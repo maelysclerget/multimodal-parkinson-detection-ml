@@ -9,7 +9,7 @@ from sklearn.utils import class_weight
 import os
 from pathlib import Path
 from FusionModels.MLP import MLP
-from Fusionmodels.IntermediateFusionMLP import IntermediateFusionMLP
+from FusionModels.IntermediateFusionMLP import IntermediateFusionMLP
 from itertools import product
 import gc
 
@@ -960,3 +960,90 @@ def hyperparameter_tuning_intermediate_fusion(
         print(f"Saved Best Model at the following Path: {model_path}")
 
     return best_results
+
+
+def evaluate_models_on_test_folds(models, features_df, ids_df, labels_df, val_test_folds_csv, device="cpu"):
+    """
+    Evaluate pre-trained models on test data from each fold.
+    
+    Args:
+        models: List of 5 pre-trained models (one per fold)
+        features_df: DataFrame with features (contains 'index' column)
+        ids_df: DataFrame with 'index', 'healthCode', and other ID columns
+        labels_df: DataFrame with 'healthCode' and 'label_PD' columns
+        val_test_folds_csv: Path to CSV file with 'healthCode', 'fold_iteration', and 'subset' (='val'/'test') columns
+        device: torch device to use for inference
+        
+    Returns:
+        pd.DataFrame: DataFrame with columns ['healthCode', 'logits_0', 'logits_1', 'actual_label', 'fold']
+    """
+    # Load val_test_folds
+    val_test_folds_df = pd.read_csv(val_test_folds_csv)
+    
+    # Separate test data
+    test_folds_df = val_test_folds_df[val_test_folds_df['subset'] == 'test']
+    
+    # Merge ids with features using 'index' column
+    data_df = ids_df.merge(features_df, on='index', how='inner')
+    
+    # Merge with labels
+    data_df = data_df.merge(labels_df[['healthCode', 'label_PD']], on='healthCode', how='inner')
+    
+    # Prepare output list
+    results = []
+    
+    # Loop through each fold
+    for fold in range(5):
+        print(f"Processing fold {fold}...")
+        
+        # Get test patient IDs for this fold
+        test_patient_ids = test_folds_df[test_folds_df['fold_iteration'] == fold]['healthCode'].values
+        
+        # Filter data for test patients
+        test_data = data_df[data_df['healthCode'].isin(test_patient_ids)]
+        
+        if len(test_data) == 0:
+            print(f"Warning: No test data for fold {fold}")
+            continue
+        
+        # Extract features (drop non-feature columns)
+        feature_cols = [col for col in test_data.columns if col not in ['index', 'healthCode', 'trial_id', 'label_PD', 'filename', 'record_id']]
+        X_test = test_data[feature_cols].values
+        y_test = test_data['label_PD'].values
+        healthcodes = test_data['healthCode'].values
+        
+        # Normalize features using StandardScaler
+        scaler = StandardScaler()
+        X_test_normalized = scaler.fit_transform(X_test)
+        
+        # Convert to tensors
+        X_test_tensor = torch.FloatTensor(X_test_normalized).to(device)
+        
+        # Get model for this fold
+        model = models[fold]
+        model.eval()
+        
+        # Run forward pass
+        with torch.no_grad():
+            logits = model(X_test_tensor)
+            logits_0 = logits[:, 0].cpu().numpy()
+            logits_1 = logits[:, 1].cpu().numpy()
+        
+        # Store results
+        for i in range(len(X_test)):
+            results.append({
+                'healthCode': healthcodes[i],
+                'logits_0': logits_0[i],
+                'logits_1': logits_1[i],
+                'actual_label': y_test[i],
+                'fold': fold
+            })
+    
+    # Convert to DataFrame
+    results_df = pd.DataFrame(results)
+    
+    print(f"Total predictions: {len(results_df)}")
+    print(f"Results shape: {results_df.shape}")
+    
+    return results_df
+
