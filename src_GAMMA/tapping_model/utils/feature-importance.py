@@ -10,6 +10,7 @@ Uses the best hyperparameters found from V2 grid search.
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import shap
 
 import torch
 import torch.nn as nn
@@ -246,110 +247,90 @@ if __name__ == "__main__":
     model.load_state_dict(best_model_state)
     print(f"✓ Training complete. Best Test AUC: {best_val_auc:.4f}\n")
     
-    # ===== PERMUTATION IMPORTANCE =====
-    print("[CALCULATING PERMUTATION IMPORTANCE]")
-    print("This measures how much AUC drops when each feature is shuffled...")
-    print("Higher value = feature is more important\n")
+    # ...existing code up to SHAP calculation...
+
+    # ===== SHAP VALUES =====
+    print("[CALCULATING SHAP VALUES]")
+    print("This measures each feature's contribution to predictions...\n")
     
-    # Get model predictions as baseline
-    model.eval()
-    baseline_pred_proba = mlp_predict_proba(model, X_test, device, batch_size)
-    baseline_auc = roc_auc_score(y_test, baseline_pred_proba)
-    print(f"Baseline AUC: {baseline_auc:.4f}\n")
+    # Create a wrapper function for SHAP
+    def model_predict(X):
+        """Wrapper for SHAP to get probability predictions"""
+        X_tensor = torch.from_numpy(X).float().to(device)
+        model.eval()
+        with torch.no_grad():
+            logits = model(X_tensor)
+            proba = torch.softmax(logits, dim=1)
+        return proba[:, 1].cpu().numpy()
     
-    # Calculate permutation importance
-    feature_importance = []
+    # Use KernelExplainer (model-agnostic, works with any model)
+    print("Initializing SHAP KernelExplainer...")
+    print("  (Using 100 background samples for efficiency)\n")
     
-    for feat_idx, feat_name in enumerate(feature_cols):
-        print(f"  Testing feature {feat_idx + 1}/{len(feature_cols)}: {feat_name}...", end='', flush=True)
+    # Sample background data for faster computation
+    background_indices = np.random.choice(len(X_test), size=min(100, len(X_test)//2), replace=False)
+    X_background = X_test[background_indices]
+    
+    explainer = shap.KernelExplainer(model_predict, X_background)
+    
+    # Calculate SHAP values for test set
+    print("Computing SHAP values for test set...")
+    shap_values = explainer.shap_values(X_test)
+    
+    print("✓ SHAP values computed\n")
+    
+    # Calculate mean absolute SHAP values for feature importance
+    mean_abs_shap = np.abs(shap_values).mean(axis=0)
+    feature_importance = pd.DataFrame({
+        'feature': feature_cols,
+        'mean_abs_shap': mean_abs_shap
+    }).sort_values('mean_abs_shap', ascending=False)
+    
+    print(f"✓ Feature Importance (by Mean |SHAP|):")
+    print(feature_importance.to_string(index=False))
+    
+    # ===== VISUALIZATION - SINGLE SHAP SUMMARY PLOT =====
+    print("\n[CREATING SHAP SUMMARY PLOT]")
+    
+    fig, ax = plt.subplots(figsize=(14, 8))
+    
+    # Create beeswarm-style plot
+    y_pos = 0
+    y_labels = []
+    y_ticks = []
+    
+    for feat_idx, feat_name in enumerate(feature_importance['feature'].values):
+        # Find index in original feature_cols
+        original_idx = feature_cols.index(feat_name)
         
-        # Shuffle this feature
-        X_test_shuffled = X_test.copy()
-        np.random.shuffle(X_test_shuffled[:, feat_idx])
+        shap_vals = shap_values[:, original_idx]
+        X_vals = X_test[:, original_idx]
         
-        # Get predictions on shuffled data
-        shuffled_pred_proba = mlp_predict_proba(model, X_test_shuffled, device, batch_size)
-        shuffled_auc = roc_auc_score(y_test, shuffled_pred_proba)
+        # Normalize X values for color coding (0-1)
+        X_norm = (X_vals - X_vals.min()) / (X_vals.max() - X_vals.min() + 1e-8)
         
-        # Importance = drop in AUC
-        importance = baseline_auc - shuffled_auc
-        feature_importance.append({
-            'feature': feat_name,
-            'importance': importance,
-            'shuffled_auc': shuffled_auc
-        })
+        # Add jitter for visualization
+        y_jitter = np.random.normal(y_pos, 0.04, len(shap_vals))
         
-        print(f" ✓ (importance: {importance:.4f})")
+        # Create scatter plot with color gradient
+        scatter = ax.scatter(shap_vals, y_jitter, c=X_norm, cmap='coolwarm', 
+                            alpha=0.7, s=40, edgecolor='gray', linewidth=0.3, vmin=0, vmax=1)
+        
+        y_labels.append(feat_name)
+        y_ticks.append(y_pos)
+        y_pos -= 1
     
-    # Convert to DataFrame and sort
-    importance_df = pd.DataFrame(feature_importance).sort_values('importance', ascending=False)
+    ax.set_yticks(y_ticks)
+    ax.set_yticklabels(y_labels, fontsize=11)
+    ax.set_xlabel('SHAP Value (Impact on Model Output)', fontweight='bold', fontsize=12)
+    ax.set_title('SHAP Feature Importance Summary\n(Red = High feature value, Blue = Low feature value)', 
+                fontweight='bold', fontsize=13)
+    ax.axvline(x=0, color='black', linestyle='--', linewidth=1.5, alpha=0.7)
+    ax.grid(axis='x', alpha=0.3, linestyle='--')
     
-    print(f"\n✓ Permutation Importance Results:")
-    print(importance_df.to_string(index=False))
-    
-    # ===== VISUALIZATION =====
-    print("\n[CREATING VISUALIZATION]")
-    
-    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
-    fig.suptitle('Feature Importance Analysis - MLP Tapping Model\n(Permutation Importance on Test Set)', 
-                 fontsize=14, fontweight='bold')
-    
-    # Plot 1: Feature importance bar chart
-    top_n = min(15, len(importance_df))
-    top_features = importance_df.head(top_n)
-    
-    colors = plt.cm.RdYlGn(np.linspace(0.3, 0.7, len(top_features)))
-    bars = axes[0].barh(range(len(top_features)), top_features['importance'].values, color=colors, alpha=0.8)
-    axes[0].set_yticks(range(len(top_features)))
-    axes[0].set_yticklabels(top_features['feature'].values, fontsize=11)
-    axes[0].invert_yaxis()
-    axes[0].set_xlabel('Importance (ΔAUC when shuffled)', fontweight='bold', fontsize=12)
-    axes[0].set_title(f'Top {top_n} Most Important Features', fontweight='bold', fontsize=12)
-    axes[0].grid(axis='x', alpha=0.3)
-    
-    # Add value labels on bars
-    for i, (idx, row) in enumerate(top_features.iterrows()):
-        axes[0].text(row['importance'] + 0.0005, i, f"{row['importance']:.4f}", 
-                    va='center', fontsize=10)
-    
-    # Plot 2: Summary statistics
-    axes[1].axis('off')
-    summary_text = f"""
-FEATURE IMPORTANCE ANALYSIS SUMMARY
-{'='*55}
-
-Model Configuration:
-  • Learning Rate: {BEST_HYPERPARAMS['learning_rate']}
-  • Weight Decay: {BEST_HYPERPARAMS['weight_decay']}
-  • Dropout Rate: {BEST_HYPERPARAMS['dropout_rate']}
-  • Hidden Dims: {BEST_HYPERPARAMS['hidden_dim_1']} → {BEST_HYPERPARAMS['hidden_dim_2']}
-
-Dataset:
-  • Total features: {len(feature_cols)}
-  • Test samples: {len(test_df)}
-  • Baseline AUC: {baseline_auc:.4f}
-
-Top 5 Most Important Features:
-"""
-    for idx, (_, row) in enumerate(importance_df.head(5).iterrows(), 1):
-        summary_text += f"\n  {idx}. {row['feature']:<25} (importance: {row['importance']:.4f})"
-    
-    summary_text += f"""
-
-Interpretation:
-  • Importance = Drop in AUC when feature is shuffled
-  • Higher values = More critical for predictions
-  • If shuffling a feature barely changes AUC,
-    it's not important for this model's decisions
-
-Bottom 5 Least Important Features:
-"""
-    for idx, (_, row) in enumerate(importance_df.tail(5).iloc[::-1].iterrows(), 1):
-        summary_text += f"\n  {idx}. {row['feature']:<25} (importance: {row['importance']:.4f})"
-    
-    axes[1].text(0.05, 0.95, summary_text, transform=axes[1].transAxes,
-                fontsize=10, verticalalignment='top', fontfamily='monospace',
-                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+    # Add colorbar
+    cbar = plt.colorbar(scatter, ax=ax)
+    cbar.set_label('Feature Value\n(Low ← → High)', fontweight='bold', fontsize=11)
     
     plt.tight_layout()
     
@@ -357,7 +338,7 @@ Bottom 5 Least Important Features:
     output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
     output_dir.mkdir(exist_ok=True, parents=True)
     
-    plot_path = output_dir / 'feature_importance_mlp_permutation.png'
+    plot_path = output_dir / 'feature_importance_mlp_shap.png'
     plt.savefig(plot_path, dpi=300, bbox_inches='tight')
     print(f"✓ Saved: {plot_path}")
     plt.close()
@@ -365,16 +346,14 @@ Bottom 5 Least Important Features:
     # ===== SAVE CSV =====
     print("\n[SAVING RESULTS]")
     
-    csv_path = output_dir / 'feature_importance_mlp_permutation.csv'
-    importance_df.to_csv(csv_path, index=False)
+    csv_path = output_dir / 'feature_importance_mlp_shap.csv'
+    feature_importance.to_csv(csv_path, index=False)
     print(f"✓ Saved: {csv_path}")
     
     print("\n" + "="*80)
-    print("✓ Feature Importance Analysis Complete!")
+    print("✓ SHAP Feature Importance Analysis Complete!")
     print("="*80)
-    print(f"\nKey Insight:")
-    print(f"  Most important feature: {importance_df.iloc[0]['feature']}")
-    print(f"  Importance score: {importance_df.iloc[0]['importance']:.4f}")
-    print(f"\n  This means shuffling '{importance_df.iloc[0]['feature']}' reduces")
-    print(f"  the model's AUC by {importance_df.iloc[0]['importance']:.4f}")
+    print(f"\nTop 5 Most Important Features:")
+    for idx, (_, row) in enumerate(feature_importance.head(5).iterrows(), 1):
+        print(f"  {idx}. {row['feature']:<30} (Mean |SHAP|: {row['mean_abs_shap']:.4f})")
     print("="*80)

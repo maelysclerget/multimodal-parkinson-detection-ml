@@ -1,27 +1,33 @@
 """
-MLP-v2: Hyperparameter Grid Search with 5-Fold Cross-Validation
+MLP-v2: Hyperparameter Grid Search with 5-Fold Cross-Validation & Class Imbalance Handling
 
 This script performs a comprehensive hyperparameter grid search for an MLP classifier
 using 5-fold cross-validation on tapping features to classify PD vs Healthy subjects.
 
 Key Features:
 - Hyperparameter grid search over learning rate, weight decay, dropout, and hidden dimensions
-- 5-fold cross-validation with per-batch 50-50 healthy/PD balancing
+- 5-fold cross-validation with selectable class imbalance handling
 - Dynamic learning rate scheduling (ReduceLROnPlateau)
 - Early stopping based on validation AUC
 - Saves best performing model (all 5 folds) to data/saved_models/
 - Generates detailed results CSV with per-fold and mean metrics
 - Creates comprehensive visualizations of results
 
-Output Files:
-- CV results CSVs:
-  * mlp_v2_hp_search_all_folds.csv - Per-fold results
-  * mlp_v2_hp_search_mean.csv - Mean metrics per hyperparameter combination
+Class Imbalance Handling (SELECT ONE):
+- 'weighted_sampler': WeightedRandomSampler for 50-50 per-batch balancing (DEFAULT)
+- 'class_weights': Loss-level weighting via CrossEntropyLoss weights
+- 'undersampling': Randomly remove majority class samples to match minority size
+- 'baseline': No balancing, train on raw imbalanced data
+
+Usage:
+BALANCING_METHOD = 'weighted_sampler'  # Change to: 'class_weights', 'undersampling', 'baseline'
+
+Output Files (with dynamic method identifier):
+- CV results CSV:
+  * mlp_v2_hp_search_mean_{method}.csv - Mean metrics per hyperparameter combination
   
 - Visualization figures (in results/):
-  * mlp_v2_results_comparison.png - Bar plots of all metrics across hyperparameters
-  * mlp_v2_hyperparameter_sensitivity.png - Sensitivity analysis for each hyperparameter
-  * mlp_v2_best_model_summary.png - Detailed summary of best model across all folds
+  * mlp_v2_best_model_summary_{method}.png - Detailed summary of best model across all folds
   
 - Best model weights (in data/saved_models/):
   * best_model_hp{X}_fold{Y}.pth - PyTorch model weights for all 5 folds
@@ -48,6 +54,10 @@ combined_features_path = "/mloscratch/users/clerget/data/csv/tapping_combined_fe
 
 NUM_FOLDS = 5
 batch_size = 64
+
+# ===== SELECT CLASS IMBALANCE HANDLING METHOD =====
+# Change to one of: 'weighted_sampler', 'class_weights', 'undersampling', 'baseline'
+BALANCING_METHOD = 'undersampling'
 
 # ===== Hyperparameter Grid for Tuning =====
 HYPERPARAMETER_GRID = {
@@ -104,7 +114,7 @@ class MLP(nn.Module):
         return self.net(x)
 
 
-def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='mean'):
+def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='majority'):
     """
     Aggregate trial-level predictions to patient-level predictions.
     
@@ -156,128 +166,7 @@ def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_lab
     return patient_preds
 
 
-def create_results_visualization(mean_results_df, output_dir):
-    """
-    Create comprehensive visualizations of hyperparameter grid search results.
-    
-    Generates plots showing:
-    - AUC vs Hyperparameters (heatmap style)
-    - Mean metrics (accuracy, F1, AUC) across all hyperparameter combinations
-    - Error bars showing std deviation
-    
-    Args:
-        mean_results_df (pd.DataFrame): DataFrame with mean results from grid search
-        output_dir (Path): Directory to save figures
-    
-    Returns:
-        None (saves figures to output_dir)
-    """
-    
-    import matplotlib.gridspec as gridspec
-    
-    # Create output directory if it doesn't exist
-    output_dir.mkdir(exist_ok=True, parents=True)
-    
-    # Figure 1: Performance comparison across all hyperparameter combinations
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('MLP-v2: Hyperparameter Grid Search Results', fontsize=16, fontweight='bold')
-    
-    # Sort by AUC for better visualization
-    sorted_df = mean_results_df.sort_values('auc_mean', ascending=False).reset_index(drop=True)
-    hp_labels = [f"HP{int(idx)}" for idx in sorted_df['hp_idx']]
-    
-    # Plot 1: AUC-ROC
-    axes[0, 0].bar(range(len(sorted_df)), sorted_df['auc_mean'], 
-                   yerr=sorted_df['auc_std'], capsize=5, alpha=0.7, color='steelblue')
-    axes[0, 0].set_xlabel('Hyperparameter Configuration')
-    axes[0, 0].set_ylabel('AUC-ROC')
-    axes[0, 0].set_title('AUC-ROC Score (sorted)')
-    axes[0, 0].set_xticks(range(len(sorted_df)))
-    axes[0, 0].set_xticklabels(hp_labels, rotation=45)
-    axes[0, 0].grid(axis='y', alpha=0.3)
-    axes[0, 0].set_ylim([0, 1])
-    
-    # Plot 2: Accuracy
-    axes[0, 1].bar(range(len(sorted_df)), sorted_df['accuracy_mean'], 
-                   yerr=sorted_df['accuracy_std'], capsize=5, alpha=0.7, color='seagreen')
-    axes[0, 1].set_xlabel('Hyperparameter Configuration')
-    axes[0, 1].set_ylabel('Accuracy')
-    axes[0, 1].set_title('Accuracy (sorted by AUC)')
-    axes[0, 1].set_xticks(range(len(sorted_df)))
-    axes[0, 1].set_xticklabels(hp_labels, rotation=45)
-    axes[0, 1].grid(axis='y', alpha=0.3)
-    axes[0, 1].set_ylim([0, 1])
-    
-    # Plot 3: F1-Score
-    axes[1, 0].bar(range(len(sorted_df)), sorted_df['f1_mean'], 
-                   yerr=sorted_df['f1_std'], capsize=5, alpha=0.7, color='coral')
-    axes[1, 0].set_xlabel('Hyperparameter Configuration')
-    axes[1, 0].set_ylabel('F1-Score')
-    axes[1, 0].set_title('F1-Score (sorted by AUC)')
-    axes[1, 0].set_xticks(range(len(sorted_df)))
-    axes[1, 0].set_xticklabels(hp_labels, rotation=45)
-    axes[1, 0].grid(axis='y', alpha=0.3)
-    axes[1, 0].set_ylim([0, 1])
-    
-    # Plot 4: All metrics comparison for top 5 models
-    top_5_df = sorted_df.head(5)
-    x = np.arange(len(top_5_df))
-    width = 0.25
-    
-    axes[1, 1].bar(x - width, top_5_df['accuracy_mean'], width, label='Accuracy', alpha=0.8)
-    axes[1, 1].bar(x, top_5_df['f1_mean'], width, label='F1-Score', alpha=0.8)
-    axes[1, 1].bar(x + width, top_5_df['auc_mean'], width, label='AUC-ROC', alpha=0.8)
-    axes[1, 1].set_xlabel('Top 5 Hyperparameter Configurations')
-    axes[1, 1].set_ylabel('Score')
-    axes[1, 1].set_title('Top 5 Models - All Metrics')
-    axes[1, 1].set_xticks(x)
-    axes[1, 1].set_xticklabels([f"HP{int(idx)}" for idx in top_5_df['hp_idx']])
-    axes[1, 1].legend()
-    axes[1, 1].grid(axis='y', alpha=0.3)
-    axes[1, 1].set_ylim([0, 1])
-    
-    plt.tight_layout()
-    fig_path = output_dir / 'mlp_v2_results_comparison.png'
-    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
-    print(f"✓ Results comparison figure saved to: {fig_path}")
-    plt.close()
-    
-    # Figure 2: Hyperparameter sensitivity analysis
-    fig, axes = plt.subplots(2, 3, figsize=(16, 10))
-    fig.suptitle('MLP-v2: Hyperparameter Sensitivity Analysis', fontsize=16, fontweight='bold')
-    
-    hyperparams = ['learning_rate', 'weight_decay', 'dropout_rate', 'hidden_dim_1', 'hidden_dim_2']
-    
-    for idx, param in enumerate(hyperparams):
-        row = idx // 3
-        col = idx % 3
-        ax = axes[row, col]
-        
-        # Group by hyperparameter value and calculate mean AUC
-        grouped = mean_results_df.groupby(param)['auc_mean'].agg(['mean', 'std']).reset_index()
-        grouped = grouped.sort_values(param)
-        
-        ax.errorbar(range(len(grouped)), grouped['mean'], yerr=grouped['std'], 
-                   fmt='o-', capsize=5, linewidth=2, markersize=8, color='steelblue')
-        ax.set_xlabel(param, fontweight='bold')
-        ax.set_ylabel('Mean AUC-ROC')
-        ax.set_title(f'Effect of {param}')
-        ax.set_xticks(range(len(grouped)))
-        ax.set_xticklabels(grouped[param].astype(str), rotation=45)
-        ax.grid(True, alpha=0.3)
-        ax.set_ylim([grouped['mean'].min() - 0.1, grouped['mean'].max() + 0.1])
-    
-    # Remove the extra subplot
-    fig.delaxes(axes[1, 2])
-    
-    plt.tight_layout()
-    fig_path = output_dir / 'mlp_v2_hyperparameter_sensitivity.png'
-    plt.savefig(fig_path, dpi=300, bbox_inches='tight')
-    print(f"✓ Hyperparameter sensitivity figure saved to: {fig_path}")
-    plt.close()
-
-
-def create_best_model_summary(best_row, best_hp_results, output_dir):
+def create_best_model_summary(best_row, best_hp_results, output_dir, balancing_method='weighted_sampler'):
     """
     Create a summary figure for the best model across all folds.
     
@@ -380,175 +269,161 @@ def create_best_model_summary(best_row, best_hp_results, output_dir):
     ax4.grid(axis='y', alpha=0.3)
     ax4.set_ylim([0, 1])
     
-    plt.savefig(output_dir / 'mlp_v2_best_model_summary.png', dpi=300, bbox_inches='tight')
-    print(f"✓ Best model summary figure saved to: {output_dir / 'mlp_v2_best_model_summary.png'}")
+    plt.savefig(output_dir / f'mlp_v2_best_model_summary_{balancing_method}.png', dpi=300, bbox_inches='tight')
+    print(f"✓ Best model summary figure saved to: {output_dir / f'mlp_v2_best_model_summary_{balancing_method}.png'}")
     plt.close()
 
 
-def create_configurations_markdown(mean_results_df, output_dir, top_n=3):
+def apply_balancing_method(X_train, y_train, method='weighted_sampler'):
     """
-    Generate markdown analysis of top hyperparameter configurations.
+    Apply class imbalance handling using one of four methods:
+    - 'weighted_sampler': WeightedRandomSampler for 50-50 balanced batch sampling (default)
+    - 'class_weights': Loss-level weighting via CrossEntropyLoss weights
+    - 'undersampling': Randomly remove majority class samples to match minority size
+    - 'baseline': No balancing, train on raw imbalanced data
     
     Args:
-        mean_results_df (pd.DataFrame): Mean results across all folds
-        output_dir (Path): Directory to save markdown file
-        top_n (int): Number of top configurations to include (default: 3)
-    """
-    # Sort by AUC descending
-    sorted_df = mean_results_df.sort_values('auc_mean', ascending=False)
+        X_train (np.ndarray): Training features [n_samples, n_features]
+        y_train (np.ndarray): Training labels [n_samples]
+        method (str): Balancing method - 'weighted_sampler' (default), 'class_weights', 'undersampling', 'baseline'
     
-    # Start markdown content
-    md_content = """# MLP V2 Best Configurations Analysis
-
-## Overview
-Analysis of hyperparameter search results for MLP V2 model across all folds.
-Source: `mlp_v2_hp_search_mean.csv`
-
-**Analysis Metric: AUC Score** (Area Under the Receiver Operating Characteristic Curve)
-
----
-
-## TOP {top_n} CONFIGURATIONS (By AUC Score)
-
-""".format(top_n=top_n)
-    
-    # Rank medals
-    medals = ["🥇", "🥈", "🥉"]
-    rank_names = ["Best", "Second Best", "Third Best"]
-    
-    # Add top configurations
-    for rank, (idx, row) in enumerate(sorted_df.head(top_n).iterrows()):
-        hp_idx = int(row['hp_idx'])
-        medal = medals[rank] if rank < len(medals) else f"#{rank+1}"
-        rank_name = rank_names[rank] if rank < len(rank_names) else f"Rank {rank+1}"
-        
-        auc_mean = row['auc_mean'] * 100
-        
-        md_content += f"""### {medal} **Rank {rank+1}: HP {hp_idx}** - {rank_name} AUC ({auc_mean:.2f}%)
-- **Learning Rate:** {row['learning_rate']}
-- **Weight Decay:** {row['weight_decay']}
-- **Dropout Rate:** {row['dropout_rate']}
-- **Hidden Dimension 1:** {int(row['hidden_dim_1'])}
-- **Hidden Dimension 2:** {int(row['hidden_dim_2'])}
-- **Accuracy:** {row['accuracy_mean']*100:.2f}% ± {row['accuracy_std']*100:.2f}%
-- **F1 Score:** {row['f1_mean']*100:.2f}% ± {row['f1_std']*100:.2f}%
-- **AUC:** {auc_mean:.2f}% ± {row['auc_std']*100:.2f}% ✨
-
----
-
-"""
-    
-    # Add summary section
-    best_row = sorted_df.iloc[0]
-    hp_idx = int(best_row['hp_idx'])
-    
-    md_content += """## Summary Statistics
-
-### Best Configuration ({}) - AUC Optimized:
-| Metric | Value |
-|--------|-------|
-| **AUC** | **{:.2f}%** (±{:.2f}%) |
-| **Accuracy** | {:.2f}% (±{:.2f}%) |
-| **F1 Score** | {:.2f}% (±{:.2f}%) |
-
-### Configuration Details:
-```
-Learning Rate:     {}
-Weight Decay:      {}
-Dropout Rate:      {}
-Hidden Layers:     {} → {}
-```
-
----
-
-## Key Findings
-
-### Hyperparameter Preferences:
-1. **Learning Rate:** {:.2e} optimal for top performance
-2. **Weight Decay:** {:.2e} strongly preferred
-3. **Dropout Rate:** {:.1f} optimal
-4. **Hidden Dimensions:** {} → {} shows strong performance
-
----
-
-## Recommendations
-
-### 🎯 **For Best AUC Performance:**
-**Use HP {}** 
-- Best AUC: **{:.2f}%**
-- Parameters: LR={}, WD={}, Dropout={}, Hidden=[{},{}]
-
----
-
-*Generated automatically by MLP V2 hyperparameter search*
-""".format(
-        hp_idx,
-        best_row['auc_mean']*100, best_row['auc_std']*100,
-        best_row['accuracy_mean']*100, best_row['accuracy_std']*100,
-        best_row['f1_mean']*100, best_row['f1_std']*100,
-        best_row['learning_rate'],
-        best_row['weight_decay'],
-        best_row['dropout_rate'],
-        int(best_row['hidden_dim_1']),
-        int(best_row['hidden_dim_2']),
-        best_row['learning_rate'],
-        best_row['weight_decay'],
-        best_row['dropout_rate'],
-        int(best_row['hidden_dim_1']),
-        int(best_row['hidden_dim_2']),
-        hp_idx,
-        best_row['auc_mean']*100,
-        best_row['learning_rate'],
-        best_row['weight_decay'],
-        best_row['dropout_rate'],
-        int(best_row['hidden_dim_1']),
-        int(best_row['hidden_dim_2'])
-    )
-    
-    # Save markdown
-    md_path = output_dir / 'MLP_V2_BEST_CONFIGURATIONS.md'
-    with open(md_path, 'w') as f:
-        f.write(md_content)
-    
-    print(f"✓ Configuration analysis saved to: {md_path}")
-
-
-def create_balanced_sampler(y_train):
-    """
-    Create a WeightedRandomSampler for 50-50 balanced batch sampling at SESSION level.
-    
-    Uses the ratio num_class_0 / num_class_1 as PD weight to achieve 50-50 split:
-    - Healthy sessions weight: 1.0
-    - PD sessions weight: num_healthy / num_pd
-    - Result: ~50% Healthy, ~50% PD in each batch
-    
-    Math: Expected batch ratio = n_healthy × 1.0 / (n_healthy × 1.0 + n_pd × (n_healthy/n_pd))
-                               = n_healthy / (n_healthy + n_healthy) 
-                               = 50-50 split
+    Returns:
+        tuple: (X_train_balanced, y_train_balanced, sampler, loss_weights, info_dict)
+            - X_train_balanced: Modified features (for undersampling/baseline, original for others)
+            - y_train_balanced: Modified labels (for undersampling/baseline, original for others)
+            - sampler: WeightedRandomSampler (for weighted_sampler method) or None
+            - loss_weights: Class weights tensor (for class_weights method) or None
+            - info_dict: Dictionary with method statistics
     """
     
     num_class_0 = np.sum(y_train == 0)  # Healthy sessions
     num_class_1 = np.sum(y_train == 1)  # PD sessions
+    total_samples = len(y_train)
     
-    # Calculate weight factor for 50-50 balance
-    pd_weight_factor = num_class_0 / num_class_1
-    weights = np.where(y_train == 0, 1.0, pd_weight_factor)
+    print(f"\nClass distribution - Healthy (0): {num_class_0}, PD (1): {num_class_1}")
+    print(f"Total sessions: {total_samples}")
     
-    print(f"  Using 50-50 balanced sampler:")
-    print(f"    - Healthy sessions: {num_class_0} (weight=1.0)")
-    print(f"    - PD sessions: {num_class_1} (weight={pd_weight_factor:.4f})")
-    print(f"    - Expected batch ratio: ~50% Healthy, ~50% PD")
+    if method == 'weighted_sampler':
+        """
+        Create a WeightedRandomSampler for 50-50 balanced batch sampling at SESSION level.
+        Uses the ratio num_class_0 / num_class_1 as PD weight to achieve 50-50 split:
+        - Healthy sessions weight: 1.0
+        - PD sessions weight: num_healthy / num_pd
+        - Result: ~50% Healthy, ~50% PD in each batch
+        """
+        pd_weight_factor = num_class_0 / num_class_1
+        weights = np.where(y_train == 0, 1.0, pd_weight_factor)
+        
+        sampler = WeightedRandomSampler(
+            weights=weights,
+            num_samples=len(weights),
+            replacement=True
+        )
+        
+        print(f"\n[BALANCING METHOD] Weighted Random Sampler (50-50 per-batch):")
+        print(f"  ├─ Healthy sessions: {num_class_0} (weight=1.0)")
+        print(f"  ├─ PD sessions: {num_class_1} (weight={pd_weight_factor:.4f})")
+        print(f"  └─ Expected batch ratio: ~50% Healthy, ~50% PD")
+        
+        info_dict = {
+            'method': 'weighted_sampler',
+            'healthy_count': num_class_0,
+            'pd_count': num_class_1,
+            'pd_weight_factor': pd_weight_factor
+        }
+        
+        return X_train, y_train, sampler, None, info_dict
     
-    sampler = WeightedRandomSampler(
-        weights=weights,
-        num_samples=len(weights),
-        replacement=True
-    )
+    elif method == 'class_weights':
+        """
+        Use CrossEntropyLoss with class weights to handle imbalance.
+        Weight for each class = total_samples / (2 × num_samples_in_class)
+        """
+        weight_class_0 = total_samples / (2 * num_class_0)
+        weight_class_1 = total_samples / (2 * num_class_1)
+        loss_weights = torch.tensor([weight_class_0, weight_class_1], dtype=torch.float32)
+        
+        print(f"\n[BALANCING METHOD] Class Weights (via CrossEntropyLoss):")
+        print(f"  ├─ Healthy (0) weight: {weight_class_0:.4f}")
+        print(f"  ├─ PD (1) weight: {weight_class_1:.4f}")
+        print(f"  └─ Training on raw {num_class_0 + num_class_1} sessions (no data modification)")
+        
+        info_dict = {
+            'method': 'class_weights',
+            'healthy_count': num_class_0,
+            'pd_count': num_class_1,
+            'weight_class_0': weight_class_0,
+            'weight_class_1': weight_class_1
+        }
+        
+        return X_train, y_train, None, loss_weights, info_dict
     
-    return sampler
+    elif method == 'undersampling':
+        """
+        Randomly remove majority class samples to match minority size.
+        Then shuffle to mix both classes throughout the dataset.
+        """
+        min_count = min(num_class_0, num_class_1)
+        
+        # Get indices for each class
+        idx_class_0 = np.where(y_train == 0)[0]
+        idx_class_1 = np.where(y_train == 1)[0]
+        
+        # Randomly sample min_count from majority class
+        rng = np.random.RandomState(42)
+        if num_class_0 > num_class_1:
+            idx_class_0 = rng.choice(idx_class_0, size=min_count, replace=False)
+        else:
+            idx_class_1 = rng.choice(idx_class_1, size=min_count, replace=False)
+        
+        # Combine and shuffle
+        selected_idx = np.concatenate([idx_class_0, idx_class_1])
+        rng.shuffle(selected_idx)
+        
+        X_train_balanced = X_train[selected_idx]
+        y_train_balanced = y_train[selected_idx]
+        
+        print(f"\n[BALANCING METHOD] Undersampling (random removal of majority):")
+        print(f"  ├─ Removed {num_class_0 - min_count if num_class_0 > num_class_1 else 0} Healthy samples")
+        print(f"  ├─ Removed {num_class_1 - min_count if num_class_1 > num_class_0 else 0} PD samples")
+        print(f"  ├─ Training on balanced {2 * min_count} sessions ({min_count} per class)")
+        print(f"  └─ RandomState(42) for reproducibility")
+        
+        info_dict = {
+            'method': 'undersampling',
+            'healthy_count_before': num_class_0,
+            'pd_count_before': num_class_1,
+            'healthy_count_after': np.sum(y_train_balanced == 0),
+            'pd_count_after': np.sum(y_train_balanced == 1),
+            'total_removed': total_samples - len(y_train_balanced)
+        }
+        
+        return X_train_balanced, y_train_balanced, None, None, info_dict
+    
+    elif method == 'baseline':
+        """
+        No balancing. Train on raw imbalanced data with standard shuffling.
+        """
+        print(f"\n[BALANCING METHOD] Baseline (no balancing):")
+        print(f"  ├─ Healthy sessions: {num_class_0}")
+        print(f"  ├─ PD sessions: {num_class_1}")
+        print(f"  ├─ Imbalance ratio: {num_class_0 / num_class_1:.2f}:1")
+        print(f"  └─ Training on raw imbalanced {total_samples} sessions")
+        
+        info_dict = {
+            'method': 'baseline',
+            'healthy_count': num_class_0,
+            'pd_count': num_class_1,
+            'imbalance_ratio': num_class_0 / num_class_1
+        }
+        
+        return X_train, y_train, None, None, info_dict
+    
+    else:
+        raise ValueError(f"Unknown balancing method: {method}. Choose from: 'weighted_sampler', 'class_weights', 'undersampling', 'baseline'")
 
 
-def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparams=None, use_scheduler=True, use_balanced_sampler=True, save_model=False):
+def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparams=None, use_scheduler=True, balancing_method='weighted_sampler', save_model=False):
     """
     Train and evaluate MLP model on a single fold of cross-validation.
     
@@ -560,7 +435,11 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
         hyperparams (dict): Hyperparameters with keys: learning_rate, weight_decay, dropout_rate,
                            hidden_dim_1, hidden_dim_2. If None, uses defaults.
         use_scheduler (bool): Whether to use ReduceLROnPlateau scheduler (default: True)
-        use_balanced_sampler (bool): Whether to use 50-50 balanced sampler (default: True)
+        balancing_method (str): Class imbalance handling method (default: 'weighted_sampler')
+            - 'weighted_sampler': WeightedRandomSampler for 50-50 per-batch balancing
+            - 'class_weights': Loss-level weighting via CrossEntropyLoss
+            - 'undersampling': Randomly remove majority class samples
+            - 'baseline': No balancing, train on raw imbalanced data
         save_model (bool): Whether to save model (not used in grid search) (default: False)
     
     Returns:
@@ -639,14 +518,12 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     y_val = val_df["label_PD"].values.astype(np.float32)
     y_test = test_df["label_PD"].values.astype(np.float32)
     
-    # Count class distribution for info
-    num_class_0 = np.sum(y_train == 0)
-    num_class_1 = np.sum(y_train == 1)
+    # ===== Apply Class Imbalance Handling Method =====
+    X_train, y_train, train_sampler, loss_weights, balance_info = apply_balancing_method(
+        X_train, y_train, method=balancing_method
+    )
     
-    print(f"Class distribution - Healthy (0): {num_class_0}, PD (1): {num_class_1}")
-    print(f"Note: Using 50-50 balanced sampler, so no additional class weights needed")
-    
-    # Convert to tensors
+    # Convert to tensors (use updated X_train, y_train from balancing method)
     X_train_t = torch.from_numpy(X_train)
     X_val_t = torch.from_numpy(X_val)
     X_test_t = torch.from_numpy(X_test)
@@ -660,12 +537,12 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     val_dataset = TensorDataset(X_val_t, y_val_t)
     test_dataset = TensorDataset(X_test_t, y_test_t)
     
-    # ===== UPGRADE 1: Create balanced sampler for training =====
-    if use_balanced_sampler:
-        print("\n[UPGRADE 1] Per-batch 50-50 balancing of Healthy/PD sessions:")
-        train_sampler = create_balanced_sampler(y_train)
+    # Create DataLoader based on sampling method
+    if train_sampler is not None:
+        # Use sampler (weighted_sampler method)
         train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, shuffle=False)
     else:
+        # Use standard shuffling (class_weights, undersampling, baseline methods)
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -677,13 +554,19 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     model = MLP(len(feature_cols), hidden_dim_1=hidden_dim_1, hidden_dim_2=hidden_dim_2, 
                 dropout_rate=dropout_rate).to(device)
     
-    # Use standard CrossEntropyLoss (no class weights since using 50-50 balanced sampler)
-    criterion = nn.CrossEntropyLoss()
+    # Create loss function with optional class weights
+    if loss_weights is not None:
+        loss_weights = loss_weights.to(device)
+        criterion = nn.CrossEntropyLoss(weight=loss_weights)
+        print(f"Using CrossEntropyLoss with class weights: {loss_weights.cpu().numpy()}")
+    else:
+        criterion = nn.CrossEntropyLoss()
+    
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
-    # ===== UPGRADE 2: Dynamic Learning Rate Scheduler =====
+    # Optional: Dynamic Learning Rate Scheduler
     if use_scheduler:
-        print("\n[UPGRADE 2] Dynamic Learning Rate Scheduler (ReduceLROnPlateau):")
+        print("\n[SCHEDULER] Dynamic Learning Rate (ReduceLROnPlateau):")
         print("  ├─ Mode: max (increase LR when metric improves)")
         print("  ├─ Factor: 0.5 (reduce LR by 50% when plateau)")
         print("  ├─ Patience: 5 epochs")
@@ -779,7 +662,7 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
             test_labels.extend(y_batch.numpy().tolist())
     
     # Aggregate to patient-level
-    patient_preds = aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='mean')
+    patient_preds = aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='majority')
     
     patient_accuracy = accuracy_score(patient_preds['label'], patient_preds['pred_binary'])
     patient_f1 = f1_score(patient_preds['label'], patient_preds['pred_binary'])
@@ -817,6 +700,7 @@ if __name__ == "__main__":
     print("MLP-v2: HYPERPARAMETER GRID SEARCH")
     print("="*80)
     print("\n[CONFIGURATION]")
+    print(f"  Balancing Method: {BALANCING_METHOD}")
     print(f"  Hyperparameter combinations: {len(list(product(*HYPERPARAMETER_GRID.values())))}")
     print(f"  Cross-validation folds: {NUM_FOLDS}")
     print("="*80)
@@ -850,7 +734,7 @@ if __name__ == "__main__":
                 fold=fold, 
                 hyperparams=hyperparams, 
                 use_scheduler=True, 
-                use_balanced_sampler=True
+                balancing_method=BALANCING_METHOD
             )
             all_results.append(result)
     
@@ -923,25 +807,10 @@ if __name__ == "__main__":
     output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
     output_dir.mkdir(exist_ok=True, parents=True)
     
-    # Save all fold results
-    all_csv = output_dir / f'mlp_v2_hp_search_all_folds.csv'
-    results_df.to_csv(all_csv, index=False)
-    print(f"\n✓ All fold results saved to: {all_csv}")
-    
     # Save mean results
-    mean_csv = output_dir / f'mlp_v2_hp_search_mean.csv'
+    mean_csv = output_dir / f'mlp_v2_hp_search_mean_{BALANCING_METHOD}.csv'
     mean_results_df.to_csv(mean_csv, index=False)
-    print(f"✓ Mean results saved to: {mean_csv}")
-    
-    # ===== Generate Visualizations =====
-    print("\n" + "="*80)
-    print("GENERATING VISUALIZATIONS")
-    print("="*80)
-    
-    create_results_visualization(mean_results_df, output_dir)
-    
-    # Generate markdown configuration analysis
-    create_configurations_markdown(mean_results_df, output_dir, top_n=3)
+    print(f"\n✓ Mean results saved to: {mean_csv}")
     
     # ===== Save Only the Best Model =====
     print("\n" + "="*80)
@@ -976,7 +845,7 @@ if __name__ == "__main__":
             print(f"  ✓ Fold {fold_number}: AUC={row['auc']:.4f}, saved to {model_save_path.name}")
     
     # Generate best model summary visualization
-    create_best_model_summary(best_row, best_hp_results, output_dir)
+    create_best_model_summary(best_row, best_hp_results, output_dir, balancing_method=BALANCING_METHOD)
     
     print("="*80)
     

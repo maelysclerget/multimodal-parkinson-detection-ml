@@ -1,9 +1,9 @@
 """
-MLP-V1: Multi-Feature MLP Classification with 5-Fold Cross-Validation
+MLP-V1: Multi-Feature MLP Classification with 5-Fold Cross-Validation & Class Imbalance Handling
 
 This script trains MLP classifiers on multiple feature sets (basic, advanced, combined)
-using 5-fold cross-validation to classify PD vs Healthy subjects. Includes optional
-hyperparameter tuning via random search on Fold 0.
+using 5-fold cross-validation to classify PD vs Healthy subjects. Supports three methods
+for handling class imbalance. Includes optional hyperparameter tuning via random search on Fold 0.
 
 Architecture:
 - Input Layer: variable input_dim
@@ -12,29 +12,38 @@ Architecture:
 - Hidden Layer 3: 16 neurons with ReLU + Dropout(0.2)
 - Output Layer: 2 neurons (logits for CrossEntropyLoss)
 
+Class Imbalance Handling (SELECT ONE):
+- 'class_weights': Assign higher loss weight to minority class (PD) errors
+- 'undersampling': Randomly remove majority class (Healthy) samples to match minority size
+- 'baseline': Train on raw imbalanced data without any balancing (default)
+
 Key Features:
 - Trains on 3 feature sets: basic, advanced, and combined features
+- Flexible class imbalance handling via apply_balancing_method() function
 - Optional random hyperparameter search (disabled by default)
-- Per-batch class balancing via WeightedRandomSampler alternative: class weights
 - Patient-level aggregation of trial predictions
 - Early stopping based on validation AUC (patience=10)
 - Generates per-fold and mean CV visualizations
-- Comprehensive results CSV files
+- Comprehensive results CSV files with method-specific naming
 
 Input:
 - Feature CSVs: basic, advanced, and combined features
 - Labels: paired_healthcode.csv with diagnosis labels
 - Splits: 5-fold CV split files
 
-Output Files:
+Output Files (dynamically named based on BALANCING_METHOD):
 - CV results CSVs:
-  * 01_basic_Basic_Features_results.csv
-  * 02_advanced_Advanced_Features_results.csv
-  * 03_combined_Combined_Features_results.csv
-  * results_all_models.csv - All models combined
+  * 01_basic_{method}_{Basic_Features}_results.csv
+  * 02_advanced_{method}_{Advanced_Features}_results.csv
+  * 03_combined_{method}_{Combined_Features}_results.csv
+  * results_all_models_{method}.csv - All models combined
   
 - Visualization figures (in results/):
-  * CV summary figures: 0X_model_name_results.png (mean ± std)
+  * CV summary figures: 0X_model_name_{method}_results.png (mean ± std)
+
+Usage:
+To change the balancing method, edit BALANCING_METHOD in the main execution block:
+    BALANCING_METHOD = 'baseline'        # or 'class_weights', 'undersampling'
 
 Dependencies:
 - PyTorch, scikit-learn, pandas, matplotlib, seaborn
@@ -171,7 +180,131 @@ def aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_lab
     return patient_preds
 
 
-def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparams=None):
+def apply_balancing_method(X_train, y_train, method='baseline'):
+    """
+    Apply class imbalance handling method to training data.
+    
+    Three methods available for handling class imbalance:
+    1. 'class_weights': Assign higher loss weight to minority class
+    2. 'undersampling': Randomly remove majority class samples to match minority size
+    3. 'baseline': Train on raw imbalanced data (no balancing)
+    
+    Args:
+        X_train (np.ndarray): Training feature matrix
+        y_train (np.ndarray): Training labels
+        method (str): Balancing method - 'class_weights', 'undersampling', or 'baseline'
+    
+    Returns:
+        tuple: (X_train_balanced, y_train_balanced, loss_weights, method_info_dict)
+            - X_train_balanced: Modified (or same) feature matrix
+            - y_train_balanced: Modified (or same) labels
+            - loss_weights: Class weights for loss function (or None)
+            - method_info_dict: Dictionary with method details for logging
+    """
+    
+    num_class_0 = np.sum(y_train == 0)  # Healthy
+    num_class_1 = np.sum(y_train == 1)  # PD
+    total_samples = len(y_train)
+    
+    info = {
+        'method': method,
+        'class_0_before': num_class_0,
+        'class_1_before': num_class_1,
+        'total_before': total_samples,
+        'class_0_after': None,
+        'class_1_after': None,
+        'total_after': None,
+        'removed_samples': 0,
+    }
+    
+    loss_weights = None
+    
+    if method == 'class_weights':
+        # METHOD 1: CLASS WEIGHTS
+        # Assign higher weight to minority class errors during loss computation
+        class_weight = total_samples / (2 * num_class_1) if num_class_1 > 0 else 1.0
+        loss_weights = torch.FloatTensor([1.0, class_weight])
+        
+        print(f"\n[CLASS WEIGHTS] Handling imbalance via loss weighting:")
+        print(f"  Class distribution:")
+        print(f"    - Healthy (0): {num_class_0} samples ({100*num_class_0/total_samples:.1f}%)")
+        print(f"    - PD (1): {num_class_1} samples ({100*num_class_1/total_samples:.1f}%)")
+        print(f"  Loss weights:")
+        print(f"    - Healthy (0): 1.0")
+        print(f"    - PD (1): {class_weight:.4f}")
+        
+        info['class_0_after'] = num_class_0
+        info['class_1_after'] = num_class_1
+        info['total_after'] = total_samples
+        
+    elif method == 'undersampling':
+        # METHOD 2: UNDERSAMPLING
+        # Remove majority class samples to match minority class size
+        total_samples_before = total_samples
+        
+        # Get indices for each class
+        indices_class_0 = np.where(y_train == 0)[0]
+        indices_class_1 = np.where(y_train == 1)[0]
+        
+        # Randomly undersample to balance classes
+        if num_class_0 > num_class_1:
+            rng = np.random.RandomState(42)
+            undersampled_indices_class_0 = rng.choice(indices_class_0, size=num_class_1, replace=False)
+            selected_indices = np.concatenate([undersampled_indices_class_0, indices_class_1])
+        else:
+            rng = np.random.RandomState(42)
+            undersampled_indices_class_1 = rng.choice(indices_class_1, size=num_class_0, replace=False)
+            selected_indices = np.concatenate([indices_class_0, undersampled_indices_class_1])
+        
+        # Apply undersampling
+        X_train = X_train[selected_indices]
+        y_train = y_train[selected_indices]
+        
+        # Shuffle
+        shuffle_indices = np.random.permutation(len(y_train))
+        X_train = X_train[shuffle_indices]
+        y_train = y_train[shuffle_indices]
+        
+        num_class_0_after = np.sum(y_train == 0)
+        num_class_1_after = np.sum(y_train == 1)
+        total_samples_after = len(y_train)
+        removed = total_samples_before - total_samples_after
+        
+        print(f"\n[UNDERSAMPLING] Balancing via majority class reduction:")
+        print(f"  Before undersampling:")
+        print(f"    - Healthy (0): {num_class_0} samples ({100*num_class_0/total_samples_before:.1f}%)")
+        print(f"    - PD (1): {num_class_1} samples ({100*num_class_1/total_samples_before:.1f}%)")
+        print(f"    - Total: {total_samples_before} samples")
+        print(f"  After undersampling:")
+        print(f"    - Healthy (0): {num_class_0_after} samples ({100*num_class_0_after/total_samples_after:.1f}%)")
+        print(f"    - PD (1): {num_class_1_after} samples ({100*num_class_1_after/total_samples_after:.1f}%)")
+        print(f"    - Total: {total_samples_after} samples")
+        print(f"    - Removed: {removed} samples ({100*removed/total_samples_before:.1f}%)")
+        
+        info['class_0_after'] = num_class_0_after
+        info['class_1_after'] = num_class_1_after
+        info['total_after'] = total_samples_after
+        info['removed_samples'] = removed
+        
+    else:  # baseline
+        # METHOD 3: BASELINE (NO BALANCING)
+        # Train on raw imbalanced data
+        
+        print(f"\n[BASELINE - NO BALANCING] Training on raw imbalanced data:")
+        print(f"  Class distribution:")
+        print(f"    - Healthy (0): {num_class_0} samples ({100*num_class_0/total_samples:.1f}%)")
+        print(f"    - PD (1): {num_class_1} samples ({100*num_class_1/total_samples:.1f}%)")
+        print(f"    - Total: {total_samples} samples")
+        print(f"  Note: No class weights, no undersampling")
+        
+        info['class_0_after'] = num_class_0
+        info['class_1_after'] = num_class_1
+        info['total_after'] = total_samples
+    
+    return X_train, y_train, loss_weights, info
+
+
+def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparams=None, balancing_method='baseline'):
     """
     Train and evaluate MLP model on a single fold of cross-validation.
     
@@ -182,6 +315,10 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
         fold (int): Fold number in cross-validation (0-4) (default: 0)
         hyperparams (dict): Hyperparameters with keys: learning_rate, weight_decay, dropout_rate,
                            hidden_dim_1, hidden_dim_2. If None, uses defaults.
+        balancing_method (str): Class imbalance handling method (default: 'baseline')
+            - 'class_weights': Assign higher loss weight to minority class
+            - 'undersampling': Randomly remove majority class samples to match minority size
+            - 'baseline': Train on raw imbalanced data (no balancing)
     
     Returns:
         dict: Results dictionary containing:
@@ -191,6 +328,7 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     """
     
     print(f"\nModel: {model_name} | Fold: {fold}")
+    print(f"Balancing Method: {balancing_method.upper()}")
     
     # Use default hyperparameters if not provided
     if hyperparams is None:
@@ -259,18 +397,8 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     y_val = val_df["label_PD"].values.astype(np.float32)
     y_test = test_df["label_PD"].values.astype(np.float32)
     
-    # Calculate class weights to handle imbalance and penalize incorrect predictions
-    # More weight on the minority class (PD=1) to avoid overpredicting 0s
-    num_class_0 = np.sum(y_train == 0)
-    num_class_1 = np.sum(y_train == 1)
-    total_samples = len(y_train)
-    
-    # Weight inversely proportional to class frequency
-    # This penalizes misclassifying the minority class more heavily
-    class_weight = total_samples / (2 * num_class_1) if num_class_1 > 0 else 1.0
-    
-    print(f"Class distribution - Healthy (0): {num_class_0}, PD (1): {num_class_1}")
-    print(f"Class weights - Healthy (0): 1.0, PD (1): {class_weight:.4f}")
+    # Apply balancing method to training data
+    X_train, y_train, loss_weights, balance_info = apply_balancing_method(X_train, y_train, method=balancing_method)
     
     # Convert to tensors
     X_train_t = torch.from_numpy(X_train)
@@ -296,9 +424,13 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     model = MLP(len(feature_cols), hidden_dim_1=hidden_dim_1, hidden_dim_2=hidden_dim_2, 
                 dropout_rate=dropout_rate).to(device)
     
-    # Create weighted CrossEntropyLoss with class weights
-    class_weights = torch.FloatTensor([1.0, class_weight]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    # Create loss function with optional class weights
+    if loss_weights is not None:
+        loss_weights = loss_weights.to(device)
+        criterion = nn.CrossEntropyLoss(weight=loss_weights)
+    else:
+        criterion = nn.CrossEntropyLoss()
+    
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
     # Training loop
@@ -540,8 +672,13 @@ if __name__ == "__main__":
         [4/4] Calculate metrics, save results, and generate visualizations
     """
     
+    # ===== SELECT BALANCING METHOD =====
+    # Choose one of: 'class_weights', 'undersampling', 'baseline'
+    BALANCING_METHOD = 'baseline'  # Change this to compare different methods
+    
     print("\n" + "="*80)
     print(" "*15 + "MLP-V1: MULTI-FEATURE CLASSIFICATION (5-FOLD CV)")
+    print(f" "*20 + f"Balancing Method: {BALANCING_METHOD.upper()}")
     print("="*80)
     
     # [1/4] Load feature sets
@@ -588,9 +725,9 @@ if __name__ == "__main__":
     for fold in range(NUM_FOLDS):
         print(f"\nFold {fold + 1}/{NUM_FOLDS}:")
         fold_results = []
-        fold_results.append(train_and_evaluate(basic_features, "Basic Features", "01_basic", fold=fold, hyperparams=best_hp_basic))
-        fold_results.append(train_and_evaluate(advanced_features, "Advanced Features", "02_advanced", fold=fold, hyperparams=best_hp_advanced))
-        fold_results.append(train_and_evaluate(combined_features, "Combined Features", "03_combined", fold=fold, hyperparams=best_hp_combined))
+        fold_results.append(train_and_evaluate(basic_features, "Basic Features", "01_basic", fold=fold, hyperparams=best_hp_basic, balancing_method=BALANCING_METHOD))
+        fold_results.append(train_and_evaluate(advanced_features, "Advanced Features", "02_advanced", fold=fold, hyperparams=best_hp_advanced, balancing_method=BALANCING_METHOD))
+        fold_results.append(train_and_evaluate(combined_features, "Combined Features", "03_combined", fold=fold, hyperparams=best_hp_combined, balancing_method=BALANCING_METHOD))
         all_results.extend(fold_results)
     
     # [4/4] Calculate metrics and save results
@@ -641,27 +778,70 @@ if __name__ == "__main__":
     
     final_results_df = pd.concat([results_df, pd.DataFrame(mean_data)], ignore_index=True)
     
-    # Save results CSV files
-    print(f"\nSaving results CSVs...")
+    # Save results CSV files with BASELINE method (no balancing)
+    print(f"\nSaving results CSVs (BASELINE - NO BALANCING)...")
     output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
     output_dir.mkdir(exist_ok=True, parents=True)
     
     model_prefixes = {
-        'Basic Features': '01_basic',
-        'Advanced Features': '02_advanced',
-        'Combined Features': '03_combined'
+        'Basic Features': '01_basic_baseline',
+        'Advanced Features': '02_advanced_baseline',
+        'Combined Features': '03_combined_baseline'
     }
     
     for model_name, prefix in model_prefixes.items():
-        model_df = final_results_df[final_results_df['model'] == model_name]
-        csv_path = output_dir / f'{prefix}_{model_name.replace(" ", "_")}_results.csv'
+        model_df = final_results_df[final_results_df['model'] == model_name.replace('_baseline', '')]
+        csv_path = output_dir / f'{prefix}_{model_name.replace(" ", "_").replace("_baseline", "")}_results.csv'
         model_df.to_csv(csv_path, index=False)
         print(f"  ✓ {csv_path.name}")
     
-    # Save all models combined
-    all_csv = output_dir / 'results_all_models.csv'
+    # Save all models combined with baseline identifier
+    all_csv = output_dir / 'results_all_models_baseline.csv'
     final_results_df.to_csv(all_csv, index=False)
     print(f"  ✓ {all_csv.name}")
+    
+    # # [COMMENTED OUT] Old output files with undersampling
+    # # print(f"\nSaving results CSVs (with UNDERSAMPLING method)...")
+    # # output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
+    # # output_dir.mkdir(exist_ok=True, parents=True)
+    # # 
+    # # model_prefixes = {
+    # #     'Basic Features': '01_basic_undersample',
+    # #     'Advanced Features': '02_advanced_undersample',
+    # #     'Combined Features': '03_combined_undersample'
+    # # }
+    # # 
+    # # for model_name, prefix in model_prefixes.items():
+    # #     model_df = final_results_df[final_results_df['model'] == model_name.replace('_undersample', '')]
+    # #     csv_path = output_dir / f'{prefix}_{model_name.replace(" ", "_").replace("_undersample", "")}_results.csv'
+    # #     model_df.to_csv(csv_path, index=False)
+    # #     print(f"  ✓ {csv_path.name}")
+    # # 
+    # # # Save all models combined with undersample identifier
+    # # all_csv = output_dir / 'results_all_models_undersample.csv'
+    # # final_results_df.to_csv(all_csv, index=False)
+    # # print(f"  ✓ {all_csv.name}")
+    
+    # # [COMMENTED OUT] Old output files (without undersampling)
+    # # output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
+    # # output_dir.mkdir(exist_ok=True, parents=True)
+    # # 
+    # # model_prefixes = {
+    # #     'Basic Features': '01_basic',
+    # #     'Advanced Features': '02_advanced',
+    # #     'Combined Features': '03_combined'
+    # # }
+    # # 
+    # # for model_name, prefix in model_prefixes.items():
+    # #     model_df = final_results_df[final_results_df['model'] == model_name]
+    # #     csv_path = output_dir / f'{prefix}_{model_name.replace(" ", "_")}_results.csv'
+    # #     model_df.to_csv(csv_path, index=False)
+    # #     print(f"  ✓ {csv_path.name}")
+    # # 
+    # # # Save all models combined
+    # # all_csv = output_dir / 'results_all_models.csv'
+    # # final_results_df.to_csv(all_csv, index=False)
+    # # print(f"  ✓ {all_csv.name}")
     
     # Find best model based on mean AUC
     mean_results_df = final_results_df[final_results_df['fold'] == 'MEAN']
@@ -671,8 +851,14 @@ if __name__ == "__main__":
     print(f"\n✓ Best model: {best_model} (AUC: {best_auc:.4f})")
     
     # Generate visualizations
-    print(f"\nGenerating visualizations...")
-    for model_name, prefix in model_prefixes.items():
+    print(f"\nGenerating visualizations (BASELINE - NO BALANCING)...")
+    model_prefixes_clean = {
+        'Basic Features': '01_basic_baseline',
+        'Advanced Features': '02_advanced_baseline',
+        'Combined Features': '03_combined_baseline'
+    }
+    
+    for model_name, prefix in model_prefixes_clean.items():
         mean_row = mean_results_df[mean_results_df['model'] == model_name].iloc[0]
         create_cv_visualization(
             model_name=model_name,
@@ -687,14 +873,17 @@ if __name__ == "__main__":
     
     # Final summary
     print("\n" + "="*80)
-    print(" "*20 + "✓ MLP-V1 TRAINING COMPLETE")
+    print(" "*15 + "✓ MLP-V1 TRAINING COMPLETE (BASELINE - NO BALANCING)")
     print("="*80)
-    print(f"\nOutput Files:")
+    print(f"\nOutput Files (BASELINE METHOD - NO BALANCING):")
     print(f"- CV results CSVs:")
-    print(f"  * 01_basic_Basic_Features_results.csv - Per-fold results")
-    print(f"  * 02_advanced_Advanced_Features_results.csv - Per-fold results")
-    print(f"  * 03_combined_Combined_Features_results.csv - Per-fold results")
-    print(f"  * results_all_models.csv - All models combined")
+    print(f"  * 01_basic_baseline_Basic_Features_results.csv - Per-fold results")
+    print(f"  * 02_advanced_baseline_Advanced_Features_results.csv - Per-fold results")
+    print(f"  * 03_combined_baseline_Combined_Features_results.csv - Per-fold results")
+    print(f"  * results_all_models_baseline.csv - All models combined")
     print(f"\n- Visualization figures (in results/):")
-    print(f"  * CV summary figures: 0X_model_name_results.png (mean ± std)")
+    print(f"  * CV summary figures: 0X_model_name_baseline_results.png (mean ± std)")
+    print(f"\n# [COMMENTED OUT] Previous methods:")
+    print(f"# - Undersampling method files: *_undersample_*.csv")
+    print(f"# - Class weights method files: 01_basic_*.csv, 02_advanced_*.csv, etc (old)")
     print("\n")

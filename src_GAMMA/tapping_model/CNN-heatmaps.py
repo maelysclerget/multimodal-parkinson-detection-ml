@@ -5,17 +5,26 @@ This script trains a 2D Convolutional Neural Network on heatmap images generated
 from tapping test data to classify PD vs Healthy subjects using 5-fold cross-validation.
 
 Architecture:
-- 3 convolutional blocks (with batch norm, pooling, dropout)
+- 3 convolutional blocks (Conv2D--BatchNorm--ReLU--MaxPool--Dropout)
 - Global average pooling
 - 2 fully connected layers (128 → 64 → 2)
 - Binary classification with CrossEntropyLoss
 
 Key Features:
-- Per-batch 50-50 healthy/PD balancing using WeightedRandomSampler
+- Selectable class imbalance handling (4 methods)
 - Patient-level aggregation of trial predictions
 - Cross-validation across 5 folds
 - Early stopping based on validation AUC
 - Generates comprehensive performance visualizations
+
+Class Imbalance Handling (SELECT ONE):
+- 'weighted_sampler': WeightedRandomSampler for 50-50 per-batch balancing (DEFAULT)
+- 'class_weights': Loss-level weighting via CrossEntropyLoss weights
+- 'undersampling': Randomly remove majority class samples to match minority size
+- 'baseline': No balancing, train on raw imbalanced data
+
+Usage:
+BALANCING_METHOD = 'weighted_sampler'  # Change to: 'class_weights', 'undersampling', 'baseline'
 
 Input:
 - Heatmap images: /mloscratch/users/clerget/data/tapping_heatmaps/{healthCode}/{trial_id}.png
@@ -24,10 +33,10 @@ Input:
 
 Output Files:
 - CV results CSV:
-  * 04_cnn_heatmap_Heatmap_CNN_cv_results.csv - Per-fold results with metrics and aggregated mean
+  * 04_cnn_heatmap_Heatmap_CNN_results.csv - Per-fold results with metrics and aggregated mean
   
-- Visualization figure (in cv_results/):
-  * 04_cnn_heatmap_Heatmap_CNN_cv_results.png - Performance metrics and summary table
+- Visualization figure (in results/):
+  * 04_cnn_heatmap_Heatmap_CNN_results.png - Performance metrics and summary table
 
 Dependencies:
 - Heatmap PNG files must be pre-generated
@@ -59,6 +68,10 @@ heatmap_base_path = "/mloscratch/users/clerget/data/tapping_heatmaps"
 
 NUM_FOLDS = 5
 batch_size = 32
+
+# ===== SELECT CLASS IMBALANCE HANDLING METHOD =====
+# Change to one of: 'weighted_sampler', 'class_weights', 'undersampling', 'baseline'
+BALANCING_METHOD = 'baseline'
 
 # ===== Image Preprocessing =====# ===== Image Transform =====
 image_transform = transforms.Compose([
@@ -191,7 +204,7 @@ class CNN2D_Heatmap(nn.Module):
         self.relu_fc2 = nn.ReLU()
         self.dropout_fc2 = nn.Dropout(0.3)
         
-        self.fc3 = nn.Linear(64, 2)  # Binary classification
+        self.fc3 = nn.Linear(64, 2)  
     
     def forward(self, x):
         """
@@ -243,39 +256,148 @@ class CNN2D_Heatmap(nn.Module):
         return x
 
 
-def create_balanced_sampler(y_train):
+def apply_balancing_method(y_train, method='weighted_sampler'):
     """
-    Create a WeightedRandomSampler for 50-50 balanced batch sampling at SESSION level.
+    Apply class imbalance handling using one of four methods:
+    - 'weighted_sampler': WeightedRandomSampler for 50-50 balanced batch sampling (default)
+    - 'class_weights': Loss-level weighting via CrossEntropyLoss weights
+    - 'undersampling': Randomly remove majority class samples to match minority size
+    - 'baseline': No balancing, train on raw imbalanced data
     
-    Uses the ratio num_class_0 / num_class_1 as PD weight to achieve 50-50 split:
-    - Healthy sessions weight: 1.0
-    - PD sessions weight: num_healthy / num_pd
-    - Result: ~50% Healthy, ~50% PD in each batch
+    Args:
+        y_train (np.ndarray): Training labels [n_samples]
+        method (str): Balancing method - 'weighted_sampler' (default), 'class_weights', 'undersampling', 'baseline'
     
-    Math: Expected batch ratio = n_healthy × 1.0 / (n_healthy × 1.0 + n_pd × (n_healthy/n_pd))
-                               = n_healthy / (n_healthy + n_healthy) 
-                               = 50-50 split
+    Returns:
+        tuple: (sampler, loss_weights, info_dict)
+            - sampler: WeightedRandomSampler (for weighted_sampler method) or None
+            - loss_weights: Class weights tensor (for class_weights method) or None
+            - info_dict: Dictionary with method statistics
     """
     
     num_class_0 = np.sum(y_train == 0)  # Healthy sessions
     num_class_1 = np.sum(y_train == 1)  # PD sessions
+    total_samples = len(y_train)
     
-    # Calculate weight factor for 50-50 balance
-    pd_weight_factor = num_class_0 / num_class_1
-    weights = np.where(y_train == 0, 1.0, pd_weight_factor)
+    print(f"\nClass distribution - Healthy (0): {num_class_0}, PD (1): {num_class_1}")
+    print(f"Total sessions: {total_samples}")
     
-    print(f"  Using 50-50 balanced sampler:")
-    print(f"    - Healthy sessions: {num_class_0} (weight=1.0)")
-    print(f"    - PD sessions: {num_class_1} (weight={pd_weight_factor:.4f})")
-    print(f"    - Expected batch ratio: ~50% Healthy, ~50% PD")
+    if method == 'weighted_sampler':
+        """
+        Create a WeightedRandomSampler for 50-50 balanced batch sampling at SESSION level.
+        Uses the ratio num_class_0 / num_class_1 as PD weight to achieve 50-50 split:
+        - Healthy sessions weight: 1.0
+        - PD sessions weight: num_healthy / num_pd
+        - Result: ~50% Healthy, ~50% PD in each batch
+        """
+        pd_weight_factor = num_class_0 / num_class_1
+        weights = np.where(y_train == 0, 1.0, pd_weight_factor)
+        
+        sampler = WeightedRandomSampler(
+            weights=weights,
+            num_samples=len(weights),
+            replacement=True
+        )
+        
+        print(f"\n[BALANCING METHOD] Weighted Random Sampler (50-50 per-batch):")
+        print(f"  ├─ Healthy sessions: {num_class_0} (weight=1.0)")
+        print(f"  ├─ PD sessions: {num_class_1} (weight={pd_weight_factor:.4f})")
+        print(f"  └─ Expected batch ratio: ~50% Healthy, ~50% PD")
+        
+        info_dict = {
+            'method': 'weighted_sampler',
+            'healthy_count': num_class_0,
+            'pd_count': num_class_1,
+            'pd_weight_factor': pd_weight_factor
+        }
+        
+        return sampler, None, info_dict
     
-    sampler = WeightedRandomSampler(
-        weights=weights,
-        num_samples=len(weights),
-        replacement=True
-    )
+    elif method == 'class_weights':
+        """
+        Use CrossEntropyLoss with class weights to handle imbalance.
+        Weight for each class = total_samples / (2 × num_samples_in_class)
+        """
+        weight_class_0 = total_samples / (2 * num_class_0)
+        weight_class_1 = total_samples / (2 * num_class_1)
+        loss_weights = torch.tensor([weight_class_0, weight_class_1], dtype=torch.float32)
+        
+        print(f"\n[BALANCING METHOD] Class Weights (via CrossEntropyLoss):")
+        print(f"  ├─ Healthy (0) weight: {weight_class_0:.4f}")
+        print(f"  ├─ PD (1) weight: {weight_class_1:.4f}")
+        print(f"  └─ Training on raw {num_class_0 + num_class_1} sessions (no data modification)")
+        
+        info_dict = {
+            'method': 'class_weights',
+            'healthy_count': num_class_0,
+            'pd_count': num_class_1,
+            'weight_class_0': weight_class_0,
+            'weight_class_1': weight_class_1
+        }
+        
+        return None, loss_weights, info_dict
     
-    return sampler
+    elif method == 'undersampling':
+        """
+        Randomly remove majority class samples to match minority size.
+        Then shuffle to mix both classes throughout the dataset.
+        Note: Returns None for sampler and weights; filtering must be done separately on data.
+        """
+        min_count = min(num_class_0, num_class_1)
+        
+        # Get indices for each class
+        idx_class_0 = np.where(y_train == 0)[0]
+        idx_class_1 = np.where(y_train == 1)[0]
+        
+        # Randomly sample min_count from majority class
+        rng = np.random.RandomState(42)
+        if num_class_0 > num_class_1:
+            idx_class_0 = rng.choice(idx_class_0, size=min_count, replace=False)
+        else:
+            idx_class_1 = rng.choice(idx_class_1, size=min_count, replace=False)
+        
+        # Combine indices
+        selected_indices = np.concatenate([idx_class_0, idx_class_1])
+        
+        print(f"\n[BALANCING METHOD] Undersampling (random removal of majority):")
+        print(f"  ├─ Removed {num_class_0 - min_count if num_class_0 > num_class_1 else 0} Healthy samples")
+        print(f"  ├─ Removed {num_class_1 - min_count if num_class_1 > num_class_0 else 0} PD samples")
+        print(f"  ├─ Training on balanced {2 * min_count} sessions ({min_count} per class)")
+        print(f"  └─ RandomState(42) for reproducibility")
+        
+        info_dict = {
+            'method': 'undersampling',
+            'healthy_count_before': num_class_0,
+            'pd_count_before': num_class_1,
+            'healthy_count_after': np.sum(y_train[selected_indices] == 0),
+            'pd_count_after': np.sum(y_train[selected_indices] == 1),
+            'total_removed': total_samples - len(selected_indices),
+            'selected_indices': selected_indices
+        }
+        
+        return None, None, info_dict
+    
+    elif method == 'baseline':
+        """
+        No balancing. Train on raw imbalanced data with standard shuffling.
+        """
+        print(f"\n[BALANCING METHOD] Baseline (no balancing):")
+        print(f"  ├─ Healthy sessions: {num_class_0}")
+        print(f"  ├─ PD sessions: {num_class_1}")
+        print(f"  ├─ Imbalance ratio: {num_class_0 / num_class_1:.2f}:1")
+        print(f"  └─ Training on raw imbalanced {total_samples} sessions")
+        
+        info_dict = {
+            'method': 'baseline',
+            'healthy_count': num_class_0,
+            'pd_count': num_class_1,
+            'imbalance_ratio': num_class_0 / num_class_1
+        }
+        
+        return None, None, info_dict
+    
+    else:
+        raise ValueError(f"Unknown balancing method: {method}. Choose from: 'weighted_sampler', 'class_weights', 'undersampling', 'baseline'")
 
 
 def aggregate_predictions(healthcodes, pred_probas, pred_binaries, labels, aggregation_method='mean'):
@@ -332,7 +454,7 @@ def aggregate_predictions(healthcodes, pred_probas, pred_binaries, labels, aggre
     return patient_preds
 
 
-def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, fold=0, use_balanced_sampler=True):
+def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, fold=0, balancing_method='weighted_sampler'):
     """
     Train and evaluate CNN model on a single fold of cross-validation.
     
@@ -345,10 +467,14 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
     Args:
         data_with_labels (pd.DataFrame): Feature data with columns [healthCode, trial_id, label_PD, ...]
         split_info (pd.DataFrame): CV split info with columns [healthCode, fold_iteration, subset]
-        model_name (str): Name for logging (e.g., 'CNN_Heatmap')
+        model_name (str): Name for logging (e.g., 'Heatmap CNN')
         model_prefix (str): Prefix for saving models
         fold (int): Fold number in cross-validation (0-4) (default: 0)
-        use_balanced_sampler (bool): Use 50-50 balanced sampling (default: True)
+        balancing_method (str): Class imbalance handling method (default: 'weighted_sampler')
+            - 'weighted_sampler': WeightedRandomSampler for 50-50 per-batch balancing
+            - 'class_weights': Loss-level weighting via CrossEntropyLoss
+            - 'undersampling': Randomly remove majority class samples
+            - 'baseline': No balancing, train on raw imbalanced data
     
     Returns:
         dict: Results dictionary containing:
@@ -357,7 +483,7 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
             - 'num_patients': Number of unique patients in test set
     """
     print(f"\n Model: {model_name} | Fold: {fold}")
-    print(f" └─ Balanced Sampler (50-50 Healthy/PD): {'✓ Enabled' if use_balanced_sampler else '✗ Disabled'}")
+    print(f" └─ Balancing Method: {balancing_method.upper()}")
     
     # Get split info for this fold
     train_hc = split_info[(split_info["fold_iteration"] == fold) & (split_info["subset"] == "train")]["healthCode"].unique()
@@ -377,8 +503,8 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
     num_class_1 = np.sum(y_train == 1)
     total_samples = len(y_train)
     
-    print(f"Class distribution - Healthy (0): {num_class_0}, PD (1): {num_class_1}")
-    print(f"Using balanced sampler → No class weights needed (equal weight for both classes)")
+    # ===== Apply Class Imbalance Handling Method =====
+    train_sampler, loss_weights, balance_info = apply_balancing_method(y_train, method=balancing_method)
     
     # Create datasets
     train_dataset = HeatmapDataset(
@@ -406,11 +532,11 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
     )
     
     # ===== Create balanced sampler for training =====
-    if use_balanced_sampler:
-        print("\n[BALANCED SAMPLING] Per-batch 50-50 balancing of Healthy/PD sessions:")
-        train_sampler = create_balanced_sampler(y_train)
+    if train_sampler is not None:
+        # Use sampler (weighted_sampler method)
         train_loader = DataLoader(train_dataset, batch_size=batch_size, sampler=train_sampler, shuffle=False)
     else:
+        # Use standard shuffling (class_weights, undersampling, baseline methods)
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -423,8 +549,14 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
     model = CNN2D_Heatmap(num_channels=32, dropout_rate=0.5).to(device)
     
     # Loss and optimizer
-    # Since balanced sampler ensures 50-50 split, use equal weights for both classes
-    criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    # Use class weights if provided, otherwise equal weight for both classes
+    if loss_weights is not None:
+        loss_weights = loss_weights.to(device)
+        criterion = nn.CrossEntropyLoss(weight=loss_weights, label_smoothing=0.1)
+        print(f"Using CrossEntropyLoss with class weights: {loss_weights.cpu().numpy()}")
+    else:
+        criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
+    
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-3)
     
     # Training loop
@@ -432,6 +564,7 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
     best_val_auc = 0.0
     patience = 10
     patience_counter = 0
+    best_model_state = None
     
     for epoch in range(num_epochs):
         # Train
@@ -468,6 +601,7 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
             # Early stopping
             if val_auc > best_val_auc:
                 best_val_auc = val_auc
+                best_model_state = model.state_dict().copy()
                 patience_counter = 0
             else:
                 patience_counter += 1
@@ -476,6 +610,11 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
                     break
     
     # Test evaluation
+    # Load best model state for testing
+    if best_model_state is not None:
+        model.load_state_dict(best_model_state)
+        print(f"✓ Loaded best model (val_auc={best_val_auc:.4f})")
+    
     model.eval()
     test_preds_proba = []
     test_preds_binary = []
@@ -500,7 +639,7 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
     
     # Aggregate to patient-level
     patient_preds = aggregate_predictions(test_healthcodes, test_preds_proba, test_preds_binary, test_labels, aggregation_method='mean')
-    
+
     patient_accuracy = accuracy_score(patient_preds['label'], patient_preds['pred_binary'])
     patient_f1 = f1_score(patient_preds['label'], patient_preds['pred_binary'])
     patient_auc = roc_auc_score(patient_preds['label'], patient_preds['pred_proba'])
@@ -556,12 +695,19 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
     plt.tight_layout()
     
     # Save figure
-    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
+    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
     fig_path = output_dir / f'{model_prefix}_{model_name.replace(" ", "_")}_fold{fold}_results.png'
     plt.savefig(fig_path, dpi=300, bbox_inches='tight')
     print(f"✓ Fold visualization saved: {fig_path}")
     
     plt.close()
+    
+    # Save model checkpoint
+    model_save_dir = Path('/mloscratch/users/clerget/data/saved_models')
+    model_save_dir.mkdir(parents=True, exist_ok=True)
+    model_path = model_save_dir / f'best_model_cnn_heatmap_fold{fold}.pth'
+    torch.save(model.state_dict(), model_path)
+    print(f"✓ Best model saved: {model_path}")
     
     return {
         'model': model_name,
@@ -621,8 +767,8 @@ def create_cv_visualization(model_name, accuracy, f1_score, auc, accuracy_std, f
     
     plt.tight_layout()
     
-    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
-    fig_path = output_dir / f'{model_prefix}_{model_name.replace(" ", "_")}_cv_results.png'
+    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
+    fig_path = output_dir / f'{model_prefix}_{model_name.replace(" ", "_")}_results.png'
     plt.savefig(fig_path, dpi=300, bbox_inches='tight')
     print(f"✓ CV Visualization saved: {fig_path}")
     
@@ -643,6 +789,12 @@ if __name__ == "__main__":
     
     print("\n" + "="*80)
     print(" "*20 + "HEATMAP CNN 5-FOLD CROSS-VALIDATION")
+    print("="*80)
+    
+    print("\n[CONFIGURATION]")
+    print(f"  Balancing Method: {BALANCING_METHOD}")
+    print(f"  Number of Folds: {NUM_FOLDS}")
+    print(f"  Batch Size: {batch_size}")
     print("="*80)
     
     # [1/4] Load and prepare data
@@ -695,8 +847,9 @@ if __name__ == "__main__":
             data_with_labels,
             split_info,
             "Heatmap CNN",
-            "07_cnn_heatmap",
-            fold=fold
+            "04_cnn_heatmap",
+            fold=fold,
+            balancing_method=BALANCING_METHOD
         )
         all_results.append(result)
     
@@ -731,8 +884,8 @@ if __name__ == "__main__":
     }])], ignore_index=True)
     
     # Save results CSV
-    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/cv_results')
-    csv_path = output_dir / '04_cnn_heatmap_Heatmap_CNN_cv_results.csv'
+    output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
+    csv_path = output_dir / '04_cnn_heatmap_Heatmap_CNN_results.csv'
     results_df.to_csv(csv_path, index=False)
     print(f"✓ Results CSV saved: {csv_path}")
     
@@ -755,7 +908,7 @@ if __name__ == "__main__":
         accuracy_std=std_accuracy,
         f1_score_std=std_f1,
         auc_std=std_auc,
-        model_prefix='07_cnn_heatmap'
+        model_prefix='04_cnn_heatmap'
     )
     
     # Final summary
@@ -765,6 +918,6 @@ if __name__ == "__main__":
     print(f"\nOutput Files:")
     print(f"- CV results CSV:")
     print(f"  * {csv_path.name} - Per-fold results")
-    print(f"\n- Visualization figure (in cv_results/):")
-    print(f"  * 04_cnn_heatmap_Heatmap_CNN_cv_results.png - General visualization")
+    print(f"\n- Visualization figure (in results/):")
+    print(f"  * 04_cnn_heatmap_Heatmap_CNN_results.png - General visualization")
     print("\n")

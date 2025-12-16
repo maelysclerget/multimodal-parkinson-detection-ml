@@ -226,3 +226,95 @@ if features_data:
 print("\n" + "="*80)
 print("✓ Data extraction and aggregation complete!")
 print("="*80)
+
+
+# ===== ANALYSIS: Patient and Session Statistics =====
+def analyze_patient_session_distribution():
+    """
+    Analyze and display distribution of PD vs Healthy patients and their sessions.
+    
+    Reads the paired healthcodes CSV with diagnosis labels and provides:
+    - Number of PD patients and their total sessions
+    - Number of Healthy (control) patients and their total sessions
+    - Individual healthCode IDs for each group
+    - Sessions per patient statistics (mean, std, min, max)
+    
+    Returns:
+        tuple: (pd_patients_dict, healthy_patients_dict)
+            - pd_patients_dict: {healthCode: num_sessions, ...} for PD patients
+            - healthy_patients_dict: {healthCode: num_sessions, ...} for Healthy patients
+    """
+    
+    print("\n" + "="*80)
+    print(" "*20 + "PATIENT & SESSION STATISTICS")
+    print("="*80)
+    
+    # Load labels and feature data
+    labels_df = pd.read_csv('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv')
+    csv_dir = Path('/mloscratch/users/clerget/data/csv')
+    feat_path = csv_dir / 'tapping_statistical_features_session.csv'
+    
+    if not feat_path.exists():
+        print(f"⚠ Warning: Feature file not found at {feat_path}")
+        print(f"  Cannot analyze sessions. Please run feature extraction first.")
+        return {}, {}
+    
+    # Load session data
+    sessions_df = pd.read_csv(feat_path)
+    
+    # Merge with labels
+    data_with_labels = sessions_df.merge(labels_df, on='healthCode', how='inner')
+    
+    # Analyze PD patients
+    pd_patients = data_with_labels[data_with_labels['label_PD'] == 1]
+    pd_unique_patients = pd_patients['healthCode'].unique()
+    pd_num_patients = len(pd_unique_patients)
+    pd_num_sessions = len(pd_patients)
+    pd_sessions_per_patient = pd_patients['healthCode'].value_counts()
+    
+    # Analyze Healthy patients
+    healthy_patients = data_with_labels[data_with_labels['label_PD'] == 0]
+    healthy_unique_patients = healthy_patients['healthCode'].unique()
+    healthy_num_patients = len(healthy_unique_patients)
+    healthy_num_sessions = len(healthy_patients)
+    healthy_sessions_per_patient = healthy_patients['healthCode'].value_counts()
+    
+    print(f"\n📊 PD (Positive) Patients:")
+    print(f"  Total PD Patients:         {pd_num_patients}")
+    print(f"  Total PD Sessions/Trials:  {pd_num_sessions}")
+    print(f"  Sessions per PD Patient:   {pd_sessions_per_patient.mean():.2f} ± {pd_sessions_per_patient.std():.2f}")
+    print(f"                             (min={pd_sessions_per_patient.min()}, max={pd_sessions_per_patient.max()})")
+    print(f"  PD Patient IDs (healthCode):")
+    for hc in sorted(pd_unique_patients):
+        num_sessions = pd_sessions_per_patient[hc]
+        print(f"    - {hc}: {num_sessions} session(s)")
+    
+    print(f"\n📊 Healthy (Control) Patients:")
+    print(f"  Total Healthy Patients:    {healthy_num_patients}")
+    print(f"  Total Healthy Sessions/Trials: {healthy_num_sessions}")
+    print(f"  Sessions per Healthy Patient: {healthy_sessions_per_patient.mean():.2f} ± {healthy_sessions_per_patient.std():.2f}")
+    print(f"                             (min={healthy_sessions_per_patient.min()}, max={healthy_sessions_per_patient.max()})")
+    print(f"  Healthy Patient IDs (healthCode):")
+    for hc in sorted(healthy_unique_patients):
+        num_sessions = healthy_sessions_per_patient[hc]
+        print(f"    - {hc}: {num_sessions} session(s)")
+    
+    print(f"\n📊 Summary:")
+    print(f"  Total Unique Patients:  {pd_num_patients + healthy_num_patients}")
+    print(f"  Total Sessions/Trials:  {pd_num_sessions + healthy_num_sessions}")
+    print(f"  Ratio (PD:Healthy):     {pd_num_patients}:{healthy_num_patients} (patients)")
+    print(f"                          {pd_num_sessions}:{healthy_num_sessions} (sessions)")
+    print("="*80)
+    
+    # Create return dictionaries
+    pd_dict = dict(zip(sorted(pd_unique_patients), 
+                       [pd_sessions_per_patient[hc] for hc in sorted(pd_unique_patients)]))
+    healthy_dict = dict(zip(sorted(healthy_unique_patients),
+                            [healthy_sessions_per_patient[hc] for hc in sorted(healthy_unique_patients)]))
+    
+    return pd_dict, healthy_dict
+
+
+# Run analysis if script is executed directly
+if __name__ == "__main__":
+    pd_patients, healthy_patients = analyze_patient_session_distribution()
