@@ -71,7 +71,7 @@ batch_size = 32
 
 # ===== SELECT CLASS IMBALANCE HANDLING METHOD =====
 # Change to one of: 'weighted_sampler', 'class_weights', 'undersampling', 'baseline'
-BALANCING_METHOD = 'baseline'
+BALANCING_METHOD = 'undersampling'
 
 # ===== Image Preprocessing =====# ===== Image Transform =====
 image_transform = transforms.Compose([
@@ -694,9 +694,9 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
     
     plt.tight_layout()
     
-    # Save figure
+     # Save figure
     output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
-    fig_path = output_dir / f'{model_prefix}_{model_name.replace(" ", "_")}_fold{fold}_results.png'
+    fig_path = output_dir / f'{model_prefix}_{model_name.replace(" ", "_")}_fold{fold}_{balancing_method}_results.png'
     plt.savefig(fig_path, dpi=300, bbox_inches='tight')
     print(f"✓ Fold visualization saved: {fig_path}")
     
@@ -705,7 +705,7 @@ def train_and_evaluate(data_with_labels, split_info, model_name, model_prefix, f
     # Save model checkpoint
     model_save_dir = Path('/mloscratch/users/clerget/data/saved_models')
     model_save_dir.mkdir(parents=True, exist_ok=True)
-    model_path = model_save_dir / f'best_model_cnn_heatmap_fold{fold}.pth'
+    model_path = model_save_dir / f'best_model_cnn_heatmap_fold{fold}_{balancing_method}.pth'
     torch.save(model.state_dict(), model_path)
     print(f"✓ Best model saved: {model_path}")
     
