@@ -4,6 +4,8 @@ zip/
 tapping-heatmaps/
 .hf_downloads/
 *.zip
+__pycache__/
+Results/
 
 # Testing images
 TestingData/

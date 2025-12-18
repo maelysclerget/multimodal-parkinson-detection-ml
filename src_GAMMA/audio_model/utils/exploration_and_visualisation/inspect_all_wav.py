@@ -1,11 +1,20 @@
+
 """
-Script to inspect all WAV files in a directory
+inspect_all_wav.py
+-------------------
+Script to inspect all WAV files in a directory.
 Generates a CSV report and summary statistics on:
-- Length (duration) uniformity
-- Sampling rate uniformity
-- Channels
-- File sizes
-- Bit depth / format
+    - Length (duration) uniformity
+    - Sampling rate uniformity
+    - Channels
+    - File sizes
+    - Bit depth / format
+
+Functions:
+    inspect_wav_file_quick(file_path):
+        Quickly inspects a WAV file and returns key properties.
+    analyze_wav_directory(directory, pattern="**/*.wav", max_files=None):
+        Analyzes all WAV files in a directory, prints summary statistics, and saves reports.
 """
 
 import soundfile as sf
@@ -19,8 +28,23 @@ from pathlib import Path
 
 def inspect_wav_file_quick(file_path):
     """
-    Quick inspection of a WAV file
-    Returns dict with key properties
+    Quickly inspects a WAV file and returns key properties.
+
+    Args:
+        file_path (str): Path to the WAV file.
+
+    Returns:
+        dict: Dictionary containing file properties:
+            - filename (str): Name of the file
+            - filepath (str): Full path to the file
+            - duration_sec (float or None): Duration in seconds
+            - sampling_rate (int or None): Sampling rate in Hz
+            - channels (int or None): Number of channels
+            - frames (int or None): Number of frames
+            - subtype (str or None): Bit depth/format subtype
+            - format (str or None): File format
+            - file_size_mb (float or None): File size in MB
+            - status (str): 'success' or error message
     """
     try:
         # Using soundfile for wav files
@@ -55,12 +79,15 @@ def inspect_wav_file_quick(file_path):
 
 def analyze_wav_directory(directory, pattern="**/*.wav", max_files=None):
     """
-    Analyze all WAV files in a directory
-    
+    Analyze all WAV files in a directory, print summary statistics, and save detailed and summary CSV reports.
+
     Args:
-        directory: Path to directory containing WAV files
-        pattern: Glob pattern for finding WAV files (default: **/*.wav)
-        max_files: Maximum number of files to process (None = all files)
+        directory (str): Path to directory containing WAV files.
+        pattern (str, optional): Glob pattern for finding WAV files (default: "**/*.wav").
+        max_files (int, optional): Maximum number of files to process (None = all files).
+
+    Returns:
+        pandas.DataFrame: DataFrame containing inspection results for each file.
     """
     print(f"Searching for WAV files in: {directory}")
     print(f"Pattern: {pattern}")
@@ -176,11 +203,12 @@ def analyze_wav_directory(directory, pattern="**/*.wav", max_files=None):
             print(f"  ✗ Multiple channel configurations found")
     
     # Save detailed report to CSV
-    output_file = os.path.join(directory, "wav_inspection_report.csv")
+    output_dir = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/audio_model"
+    output_file = os.path.join(output_dir, "wav_inspection_report.csv")
     df.to_csv(output_file, index=False)
     
     # Also save summary statistics to a separate CSV
-    summary_file = os.path.join(directory, "wav_inspection_summary.csv")
+    summary_file = os.path.join(output_dir, "wav_inspection_summary.csv")
     if (df['status'] == 'success').sum() > 0:
         df_success = df[df['status'] == 'success']
         
@@ -239,13 +267,21 @@ def analyze_wav_directory(directory, pattern="**/*.wav", max_files=None):
 
 
 if __name__ == "__main__":
+    """
+    Command-line interface for inspecting all WAV files in a directory.
+    Usage:
+        python inspect_all_wav.py [directory] [max_files]
+    Args:
+        directory (str, optional): Directory to search for WAV files. Defaults to '/mloscratch/users/gnahas/data/wav'.
+        max_files (int, optional): Maximum number of files to process. Defaults to None (all files).
+    """
     if len(sys.argv) > 1:
         directory = sys.argv[1]
     else:
-        directory = "/mloscratch/users/gnahas/data"
-    
+        directory = "/mloscratch/users/gnahas/data/wav"
+
     max_files = None
     if len(sys.argv) > 2:
         max_files = int(sys.argv[2])
-    
+
     analyze_wav_directory(directory, max_files=max_files)

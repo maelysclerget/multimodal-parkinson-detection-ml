@@ -1,6 +1,18 @@
+
 """
-Convert m4a files to wav format (mono) using ffmpeg
-Replicates the teacher's approach from m4a_full_pipeline_spectrograms.py
+Convert m4a files to wav format (mono) using ffmpeg.
+
+This script provides utilities to batch-convert .m4a audio files to .wav format (mono channel) using ffmpeg, replicating the approach from m4a_full_pipeline_spectrograms.py. It is intended for preprocessing large audio datasets for downstream machine learning or signal processing tasks.
+
+Features:
+- Checks for ffmpeg availability in the system PATH.
+- Converts individual or batches of .m4a files to .wav (mono) using ffmpeg.
+- Skips files that have already been converted (unless specified otherwise).
+- Handles errors and prints informative messages.
+- Can be run as a script with command-line arguments for input/output directories, ffmpeg binary, and file patterns.
+
+Expected usage:
+    python convert_m4a_to_wav.py <input_dir> <output_dir> [--ffmpeg-bin ffmpeg] [--pattern *.m4a] [--no-skip-existing]
 """
 
 import subprocess
@@ -13,22 +25,31 @@ from pathlib import Path
 
 
 def detect_ffmpeg(cmd="ffmpeg"):
-    """Check if ffmpeg is available in PATH"""
+    """
+    Check if ffmpeg is available in the system PATH.
+
+    Args:
+        cmd (str): Name or path of the ffmpeg executable (default: 'ffmpeg').
+
+    Returns:
+        bool: True if ffmpeg is found, False otherwise.
+    """
     return shutil.which(cmd) is not None
 
 
 def convert_m4a_to_wav(src_path, dst_path, ffmpeg_bin="ffmpeg"):
     """
-    Convert a single m4a file to mono wav using ffmpeg
+    Convert a single m4a file to mono wav using ffmpeg.
+
     Replicates: ffmpeg -y -i <src> -ac 1 <dst>
-    
+
     Args:
-        src_path: Path to input m4a file
-        dst_path: Path to output wav file
-        ffmpeg_bin: ffmpeg executable name/path
-    
+        src_path (str or Path): Path to input .m4a file.
+        dst_path (str or Path): Path to output .wav file.
+        ffmpeg_bin (str): ffmpeg executable name or path (default: 'ffmpeg').
+
     Returns:
-        True if successful, False otherwise
+        bool: True if conversion was successful, False otherwise.
     """
     try:
         # Ensure output directory exists
@@ -56,14 +77,17 @@ def convert_m4a_to_wav(src_path, dst_path, ffmpeg_bin="ffmpeg"):
 
 def batch_convert_m4a_to_wav(input_dir, output_dir, pattern="*.m4a", ffmpeg_bin="ffmpeg", skip_existing=True):
     """
-    Convert all m4a files in a directory to mono wav
-    
+    Convert all .m4a files in a directory to mono .wav files using ffmpeg.
+
     Args:
-        input_dir: Directory containing m4a files
-        output_dir: Directory to save wav files
-        pattern: Glob pattern for finding m4a files (default: *.m4a)
-        ffmpeg_bin: ffmpeg executable name/path
-        skip_existing: Skip conversion if wav file already exists
+        input_dir (str or Path): Directory containing .m4a files.
+        output_dir (str or Path): Directory to save .wav files. Will be created if it does not exist.
+        pattern (str): Glob pattern for finding .m4a files (default: '*.m4a').
+        ffmpeg_bin (str): ffmpeg executable name or path (default: 'ffmpeg').
+        skip_existing (bool): If True, skip conversion if .wav file already exists (default: True).
+
+    Returns:
+        None
     """
     # Check ffmpeg availability
     if not detect_ffmpeg(ffmpeg_bin):
