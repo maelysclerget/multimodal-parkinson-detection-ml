@@ -1,0 +1,54 @@
+# Ignore local data & zip files
+data/
+zip/
+tapping-heatmaps/
+.hf_downloads/
+*.zip
+__pycache__/
+Results/
+
+# Testing images
+TestingData/
+download.png
+images.jpeg
+x1080.jpeg
+
+# Byte-compiled / cached files
+*.__pycache__/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# VSCode settings (optional but common)
+.vscode/
+
+# macOS metadata (safe to ignore)
+.DS_Store
+
+# Models
+models/
+
+# CSVs 
+paired_healthcode.csv 
+fusion_features.csv 
+intermediate_features_audio.csv
+intermediate_features_tapping.csv
+intermediate_features_audio_spectrograms.csv
+intermediate_features_tapping_heatmaps.csv
+intermediate_image_fusion_features.csv
+tapping_ids.csv
+tapping_features.csv
+audio_ids.csv
+audio_features.csv
