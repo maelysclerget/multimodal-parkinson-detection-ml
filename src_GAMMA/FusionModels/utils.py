@@ -121,7 +121,8 @@ def cross_validation_5fold_early_fusion(
     test_losses = []
     test_accs = []
     test_f1s = []
-    test_roc_aucs = []
+    test_roc_aucs_session = []  # Session-level ROC AUC (majority voting)
+    test_roc_aucs_patient = []  # Patient-level ROC AUC (averaged probabilities)
     confusion_matrices = []
     models_list = []
     
@@ -204,36 +205,62 @@ def cross_validation_5fold_early_fusion(
             verbose=verbose
         )
         
-        # Test model with majority voting per patient
+        # Test model at session-level (no aggregation)
         if verbose:
             print(f"\n{'='*50}")
-            print("Testing MLP with Majority Voting...")
+            print("Testing MLP at Session-level (Individual Trials)...")
             print(f"{'='*50}")
         
-        # Prepare test dataframe with standardized features
+        # Get predictions and probabilities for all test sessions
+        X_test_tensor = torch.tensor(X_test, dtype=torch.float32).to(device)
+        model.eval()
+        with torch.no_grad():
+            logits = model(X_test_tensor)
+            probs = torch.softmax(logits, dim=1)
+            probs_class_1 = probs[:, 1].cpu().numpy()
+            preds = torch.argmax(logits, dim=1).cpu().numpy()
+        
+        # Compute session-level ROC AUC (no aggregation)
+        from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, confusion_matrix
+        session_roc_auc = roc_auc_score(y_test, probs_class_1)
+        session_acc = accuracy_score(y_test, preds)
+        session_f1 = f1_score(y_test, preds)
+        session_conf_mat = confusion_matrix(y_test, preds)
+        
+        if verbose:
+            print(f"\nSession-level Results (Individual Trials):")
+            print(f"  Number of trials: {len(y_test)}")
+            print(f"  Test Accuracy: {session_acc:.4f}")
+            print(f"  Test F1 Score: {session_f1:.4f}")
+            print(f"  Test ROC AUC (Session): {session_roc_auc:.4f}")
+            print(f"\nConfusion Matrix:\n{session_conf_mat}")
+        
+        # Test model with probability averaging per patient (patient-level)
+        if verbose:
+            print(f"\n{'='*50}")
+            print("Testing MLP with Probability Averaging (Patient-level)...")
+            print(f"{'='*50}")
+        
+        # Prepare test dataframe with standardized features for test_by_averaging
         test_data_standardized = test_data.copy()
         test_data_standardized[feature_cols] = X_test
+        test_data_standardized['fold'] = fold
         
-        # Use the test_with_majority_counting method
-        test_results = model.test_with_majority_counting(test_data_standardized)
+        # Use the test_by_averaging method (patient-level)
+        test_results_patient = model.test_by_averaging(test_data_standardized, fold_column='fold')
         
-        # Display results
         if verbose:
-            print(f"\nPatient-level Results (Majority Voting):")
-            print(f"  Number of patients: {test_results['num_patients']}")
-            print(f"  Number of trials: {test_results['num_trials']}")
-            print(f"  Test Accuracy: {test_results['test_acc']:.4f}")
-            print(f"  Test F1 Score: {test_results['test_f1']:.4f}")
-            print(f"  Test ROC AUC: {test_results['test_roc_auc']:.4f}")
-            print(f"\nConfusion Matrix:\n{test_results['test_conf_mat']}")
+            print(f"\nPatient-level Results (Averaged Probabilities):")
+            print(f"  Test ROC AUC (Patient): {test_results_patient['mean_roc_auc']:.4f}")
+            print(f"  Number of patients: {len(test_results_patient['averaged_predictions'])}")
         
         # Store results
-        # Note: test_with_majority_counting doesn't return test_loss, so we'll use a placeholder
-        test_losses.append(0.0)  # Placeholder - majority voting doesn't have a direct loss value
-        test_accs.append(test_results['test_acc'])
-        test_f1s.append(test_results['test_f1'])
-        test_roc_aucs.append(test_results['test_roc_auc'])
-        confusion_matrices.append(test_results['test_conf_mat'])
+        test_losses.append(0.0)  # Placeholder
+        test_accs.append(session_acc)
+        test_f1s.append(session_f1)
+        test_roc_aucs_session.append(session_roc_auc)
+        test_roc_aucs_patient.append(test_results_patient['mean_roc_auc'])
+        confusion_matrices.append(session_conf_mat)
         
         # Save model
         # model_path = os.path.join(output_dir, f"model_fold_{fold}.pth")
@@ -251,8 +278,10 @@ def cross_validation_5fold_early_fusion(
         'std_test_acc': np.std(test_accs),
         'mean_test_f1': np.mean(test_f1s),
         'std_test_f1': np.std(test_f1s),
-        'mean_test_roc_auc': np.mean(test_roc_aucs),
-        'std_test_roc_auc': np.std(test_roc_aucs),
+        'mean_test_roc_auc_session': np.mean(test_roc_aucs_session),
+        'std_test_roc_auc_session': np.std(test_roc_aucs_session),
+        'mean_test_roc_auc_patient': np.mean(test_roc_aucs_patient),
+        'std_test_roc_auc_patient': np.std(test_roc_aucs_patient),
         'confusion_matrices': confusion_matrices,
         'models_list': models_list
     }
@@ -263,7 +292,8 @@ def cross_validation_5fold_early_fusion(
         print(f"{'='*50}")
         print(f"Test Accuracy: {results['mean_test_acc']:.4f} ± {results['std_test_acc']:.4f}")
         print(f"Test F1 Score: {results['mean_test_f1']:.4f} ± {results['std_test_f1']:.4f}")
-        print(f"Test ROC AUC:  {results['mean_test_roc_auc']:.4f} ± {results['std_test_roc_auc']:.4f}")
+        print(f"Test ROC AUC (Session-level, Majority Voting): {results['mean_test_roc_auc_session']:.4f} ± {results['std_test_roc_auc_session']:.4f}")
+        print(f"Test ROC AUC (Patient-level, Averaged Probs):  {results['mean_test_roc_auc_patient']:.4f} ± {results['std_test_roc_auc_patient']:.4f}")
     
     return results
 
@@ -388,16 +418,17 @@ def hyperparameter_tuning(
             print("------------------------------")
             print(f"Test Accuracy: {hyperparam_set_res['mean_test_acc']:.4f} ± {hyperparam_set_res['std_test_acc']:.4f}")
             print(f"Test F1 Score: {hyperparam_set_res['mean_test_f1']:.4f} ± {hyperparam_set_res['std_test_f1']:.4f}")
-            print(f"Test ROC AUC:  {hyperparam_set_res['mean_test_roc_auc']:.4f} ± {hyperparam_set_res['std_test_roc_auc']:.4f}")
+            print(f"Test ROC AUC (Session): {hyperparam_set_res['mean_test_roc_auc_session']:.4f} ± {hyperparam_set_res['std_test_roc_auc_session']:.4f}")
+            print(f"Test ROC AUC (Patient): {hyperparam_set_res['mean_test_roc_auc_patient']:.4f} ± {hyperparam_set_res['std_test_roc_auc_patient']:.4f}")
             print("------------------------------", "\n")
 
-        if hyperparam_set_res['mean_test_roc_auc'] >= best_ROC_AUC:
+        if hyperparam_set_res['mean_test_roc_auc_patient'] >= best_ROC_AUC:
             if verbose:
                 print("Found New Best Model!")
                 print("------------------------------", "\n")
 
             best_results = hyperparam_set_res
-            best_ROC_AUC = hyperparam_set_res['mean_test_roc_auc']
+            best_ROC_AUC = hyperparam_set_res['mean_test_roc_auc_patient']
 
             BEST_HIDDEN_LAYERS = HIDDEN_LAYERS
             BEST_BATCH_SIZE = BATCH_SIZE
@@ -431,7 +462,8 @@ def hyperparameter_tuning(
         print("------------------------------")
         print(f"Best Test Accuracy: {best_results['mean_test_acc']:.4f} ± {best_results['std_test_acc']:.4f}")
         print(f"Best Test F1 Score: {best_results['mean_test_f1']:.4f} ± {best_results['std_test_f1']:.4f}")
-        print(f"Best Test ROC AUC:  {best_results['mean_test_roc_auc']:.4f} ± {best_results['std_test_roc_auc']:.4f}")
+        print(f"Best Test ROC AUC (Session): {best_results['mean_test_roc_auc_session']:.4f} ± {best_results['std_test_roc_auc_session']:.4f}")
+        print(f"Best Test ROC AUC (Patient): {best_results['mean_test_roc_auc_patient']:.4f} ± {best_results['std_test_roc_auc_patient']:.4f}")
         print("------------------------------", "\n")
 
     # Save best model as .pth to output_dir
@@ -569,7 +601,8 @@ def cross_validation_5fold_intermediate_fusion(
     test_losses = []
     test_accs = []
     test_f1s = []
-    test_roc_aucs = []
+    test_roc_aucs_session = []  # Session-level ROC AUC (individual trials)
+    test_roc_aucs_patient = []  # Patient-level ROC AUC (averaged probabilities)
     confusion_matrices = []
     models_list = []
     
@@ -700,41 +733,71 @@ def cross_validation_5fold_intermediate_fusion(
             verbose=verbose
         )
         
-        # Test model with majority voting at patient level
+        # Test model at session-level (no aggregation)
         if verbose:
             print(f"\n{'='*50}")
-            print("Testing IntermediateFusionMLP with Majority Voting...")
+            print("Testing IntermediateFusionMLP at Session-level (Individual Trials)...")
             print(f"{'='*50}")
 
+        # Get predictions and probabilities for all test sessions
+        X_test_audio_tensor = torch.tensor(X_test_audio, dtype=torch.float32).to(device)
+        X_test_tapping_tensor = torch.tensor(X_test_tapping, dtype=torch.float32).to(device)
+        
+        model.eval()
+        with torch.no_grad():
+            logits = model(X_test_audio_tensor, X_test_tapping_tensor)
+            probs = torch.softmax(logits, dim=1)
+            probs_class_1 = probs[:, 1].cpu().numpy()
+            preds = torch.argmax(logits, dim=1).cpu().numpy()
+        
+        # Compute session-level ROC AUC (no aggregation)
+        from sklearn.metrics import roc_auc_score, accuracy_score, f1_score, confusion_matrix
+        session_roc_auc = roc_auc_score(y_test, probs_class_1)
+        session_acc = accuracy_score(y_test, preds)
+        session_f1 = f1_score(y_test, preds)
+        session_conf_mat = confusion_matrix(y_test, preds)
+        
+        if verbose:
+            print(f"\nSession-level Results (Individual Trials):")
+            print(f"  Number of trials: {len(y_test)}")
+            print(f"  Test Accuracy: {session_acc:.4f}")
+            print(f"  Test F1 Score: {session_f1:.4f}")
+            print(f"  Test ROC AUC (Session): {session_roc_auc:.4f}")
+            print(f"\nConfusion Matrix:\n{session_conf_mat}")
+        
+        # Test model with probability averaging per patient (patient-level)
+        if verbose:
+            print(f"\n{'='*50}")
+            print("Testing IntermediateFusionMLP with Probability Averaging (Patient-level)...")
+            print(f"{'='*50}")
+        
         # Build separate test dataframes with standardized features
         test_audio_standardized = test_audio.copy()
         test_audio_standardized[audio_feature_cols] = X_test_audio
+        test_audio_standardized['fold'] = fold
         
         test_tapping_standardized = test_tapping.copy()
         test_tapping_standardized[tapping_feature_cols] = X_test_tapping
+        test_tapping_standardized['fold'] = fold
         
         # Construct labels_df for this fold (one row per patient)
         test_labels_df = test_audio[['healthCode', 'label_PD']].drop_duplicates().reset_index(drop=True)
 
-        # Use majority voting per healthCode with separate audio and tapping dataframes
-        test_results = model.test_with_majority_counting(test_audio_standardized, test_tapping_standardized, test_labels_df)
-
-        # Display patient-level results
+        # Use the test_by_averaging method (patient-level)
+        test_results_patient = model.test_by_averaging(test_audio_standardized, test_tapping_standardized, test_labels_df, fold_column='fold')
+        
         if verbose:
-            print(f"\nPatient-level Results (Majority Voting):")
-            print(f"  Number of patients: {test_results['num_patients']}")
-            print(f"  Number of trials: {test_results['num_trials']}")
-            print(f"  Test Accuracy: {test_results['test_acc']:.4f}")
-            print(f"  Test F1 Score: {test_results['test_f1']:.4f}")
-            print(f"  Test ROC AUC: {test_results['test_roc_auc']:.4f}")
-            print(f"\nConfusion Matrix:\n{test_results['test_conf_mat']}")
+            print(f"\nPatient-level Results (Averaged Probabilities):")
+            print(f"  Test ROC AUC (Patient): {test_results_patient['mean_roc_auc']:.4f}")
+            print(f"  Number of patients: {len(test_results_patient['averaged_predictions'])}")
 
-        # Store results (test loss not defined for majority voting)
+        # Store results
         test_losses.append(0.0)
-        test_accs.append(test_results['test_acc'])
-        test_f1s.append(test_results['test_f1'])
-        test_roc_aucs.append(test_results['test_roc_auc'])
-        confusion_matrices.append(test_results['test_conf_mat'])
+        test_accs.append(session_acc)
+        test_f1s.append(session_f1)
+        test_roc_aucs_session.append(session_roc_auc)
+        test_roc_aucs_patient.append(test_results_patient['mean_roc_auc'])
+        confusion_matrices.append(session_conf_mat)
         
         # Save model state dict
         models_list.append(model.state_dict())
@@ -747,8 +810,10 @@ def cross_validation_5fold_intermediate_fusion(
         'std_test_acc': np.std(test_accs),
         'mean_test_f1': np.mean(test_f1s),
         'std_test_f1': np.std(test_f1s),
-        'mean_test_roc_auc': np.mean(test_roc_aucs),
-        'std_test_roc_auc': np.std(test_roc_aucs),
+        'mean_test_roc_auc_session': np.mean(test_roc_aucs_session),
+        'std_test_roc_auc_session': np.std(test_roc_aucs_session),
+        'mean_test_roc_auc_patient': np.mean(test_roc_aucs_patient),
+        'std_test_roc_auc_patient': np.std(test_roc_aucs_patient),
         'confusion_matrices': confusion_matrices,
         'models_list': models_list
     }
@@ -760,7 +825,8 @@ def cross_validation_5fold_intermediate_fusion(
         print(f"Test Loss:     {results['mean_test_loss']:.4f} ± {results['std_test_loss']:.4f}")
         print(f"Test Accuracy: {results['mean_test_acc']:.4f} ± {results['std_test_acc']:.4f}")
         print(f"Test F1 Score: {results['mean_test_f1']:.4f} ± {results['std_test_f1']:.4f}")
-        print(f"Test ROC AUC:  {results['mean_test_roc_auc']:.4f} ± {results['std_test_roc_auc']:.4f}")
+        print(f"Test ROC AUC (Session-level, Majority Voting): {results['mean_test_roc_auc_session']:.4f} ± {results['std_test_roc_auc_session']:.4f}")
+        print(f"Test ROC AUC (Patient-level, Averaged Probs):  {results['mean_test_roc_auc_patient']:.4f} ± {results['std_test_roc_auc_patient']:.4f}")
     
     return results
 
@@ -898,16 +964,17 @@ def hyperparameter_tuning_intermediate_fusion(
             print("------------------------------")
             print(f"Test Accuracy: {hyperparam_set_res['mean_test_acc']:.4f} ± {hyperparam_set_res['std_test_acc']:.4f}")
             print(f"Test F1 Score: {hyperparam_set_res['mean_test_f1']:.4f} ± {hyperparam_set_res['std_test_f1']:.4f}")
-            print(f"Test ROC AUC:  {hyperparam_set_res['mean_test_roc_auc']:.4f} ± {hyperparam_set_res['std_test_roc_auc']:.4f}")
+            print(f"Test ROC AUC (Session): {hyperparam_set_res['mean_test_roc_auc_session']:.4f} ± {hyperparam_set_res['std_test_roc_auc_session']:.4f}")
+            print(f"Test ROC AUC (Patient): {hyperparam_set_res['mean_test_roc_auc_patient']:.4f} ± {hyperparam_set_res['std_test_roc_auc_patient']:.4f}")
             print("------------------------------", "\n")
 
-        if hyperparam_set_res['mean_test_roc_auc'] >= best_ROC_AUC:
+        if hyperparam_set_res['mean_test_roc_auc_patient'] >= best_ROC_AUC:
             if verbose:
                 print("Found New Best Model!")
                 print("------------------------------", "\n")
 
             best_results = hyperparam_set_res
-            best_ROC_AUC = hyperparam_set_res['mean_test_roc_auc']
+            best_ROC_AUC = hyperparam_set_res['mean_test_roc_auc_patient']
 
             BEST_HIDDEN_LAYERS = HIDDEN_LAYERS
             BEST_AUDIO_BRANCH = AUDIO_BRANCH
@@ -945,7 +1012,8 @@ def hyperparameter_tuning_intermediate_fusion(
         print("------------------------------")
         print(f"Best Test Accuracy: {best_results['mean_test_acc']:.4f} ± {best_results['std_test_acc']:.4f}")
         print(f"Best Test F1 Score: {best_results['mean_test_f1']:.4f} ± {best_results['std_test_f1']:.4f}")
-        print(f"Best Test ROC AUC:  {best_results['mean_test_roc_auc']:.4f} ± {best_results['std_test_roc_auc']:.4f}")
+        print(f"Best Test ROC AUC (Session): {best_results['mean_test_roc_auc_session']:.4f} ± {best_results['std_test_roc_auc_session']:.4f}")
+        print(f"Best Test ROC AUC (Patient): {best_results['mean_test_roc_auc_patient']:.4f} ± {best_results['std_test_roc_auc_patient']:.4f}")
         print("------------------------------", "\n")
 
     # Save best model as .pth to output_dir

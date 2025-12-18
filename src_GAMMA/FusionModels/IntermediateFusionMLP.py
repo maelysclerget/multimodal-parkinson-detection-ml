@@ -376,6 +376,117 @@ class IntermediateFusionMLP(nn.Module):
         return result_metrics
 
 
+    def test_by_averaging(self, audio_df, tapping_df, labels_df, fold_column='fold'):
+        """
+        Evaluate the model by averaging class 1 probabilities per healthCode and computing ROC AUC per fold.
+        
+        This method:
+        1. Predicts probabilities for all trials
+        2. Averages class 1 probabilities per healthCode
+        3. Computes ROC AUC per fold
+        4. Returns mean and standard deviation of ROC AUC across folds
+        
+        Args:
+            audio_df: Pandas DataFrame containing audio feature columns plus 'healthCode' and optionally fold_column.
+                     Each row represents one trial. Multiple trials may exist per patient (healthCode).
+            tapping_df: Pandas DataFrame containing tapping feature columns plus 'healthCode' and optionally fold_column.
+                       Each row represents one trial. Must have same length and healthCode ordering as audio_df.
+            labels_df: Pandas DataFrame containing 'healthCode' and 'label_PD' columns.
+                      One row per unique patient with their ground truth label.
+            fold_column: Name of the column containing fold assignments (default: 'fold')
+                    
+        Returns:
+            Dictionary containing:
+                - mean_roc_auc: Mean ROC AUC across folds
+                - std_roc_auc: Standard deviation of ROC AUC across folds
+                - fold_roc_aucs: List of ROC AUC scores per fold
+                - averaged_predictions: DataFrame with averaged predictions per healthCode
+        """
+        # Make copies to avoid modifying the original dataframes
+        audio_df_copy = audio_df.copy()
+        tapping_df_copy = tapping_df.copy()
+        labels_df_copy = labels_df.copy()
+        
+        # Extract healthCode from audio_df
+        healthcodes = audio_df_copy['healthCode'].values
+        folds = audio_df_copy[fold_column].values if fold_column in audio_df_copy.columns else None
+        
+        # Create a mapping from healthCode to label_PD
+        label_map = dict(zip(labels_df_copy['healthCode'], labels_df_copy['label_PD']))
+        
+        # Map healthcodes to their true labels
+        true_labels = np.array([label_map[hc] for hc in healthcodes])
+        
+        # Drop metadata columns to get only numeric features
+        metadata_columns = ['healthCode', 'label_PD', 'filename', 'record_id', 'healthcode', 'row_id', 'trial_id',
+                          'filename_file1', 'filename_file2', 'record_id_file1', 'record_id_file2',
+                          fold_column, 'fold']
+        
+        audio_feature_columns = [col for col in audio_df_copy.columns if col not in metadata_columns]
+        tapping_feature_columns = [col for col in tapping_df_copy.columns if col not in metadata_columns]
+        
+        audio_features = audio_df_copy[audio_feature_columns].values.astype(np.float32)
+        tapping_features = tapping_df_copy[tapping_feature_columns].values.astype(np.float32)
+        
+        # Convert to torch tensors
+        audio_features_tensor = torch.FloatTensor(audio_features).to(self.device)
+        tapping_features_tensor = torch.FloatTensor(tapping_features).to(self.device)
+        
+        # Get probabilities for each trial
+        self.eval()
+        with torch.no_grad():
+            probs = self.predict_proba(audio_features_tensor, tapping_features_tensor).cpu().numpy()
+        
+        # Create a dataframe with healthCode, true_label, probabilities, and fold
+        results_dict = {
+            'healthCode': healthcodes,
+            'label_PD': true_labels,
+            'prob_class_1': probs[:, 1]
+        }
+        
+        if folds is not None:
+            results_dict['fold'] = folds
+        
+        results_df = pd.DataFrame(results_dict)
+        
+        # Group by healthCode (and fold if present) and average probabilities
+        if folds is not None:
+            averaged_predictions = results_df.groupby(['healthCode', 'fold']).agg({
+                'prob_class_1': 'mean',
+                'label_PD': 'first'
+            }).reset_index()
+            
+            # Compute ROC AUC per fold
+            fold_roc_aucs = []
+            unique_folds = sorted(averaged_predictions['fold'].unique())
+            
+            for fold in unique_folds:
+                fold_data = averaged_predictions[averaged_predictions['fold'] == fold]
+                if len(fold_data) > 0 and len(fold_data['label_PD'].unique()) > 1:
+                    fold_auc = roc_auc_score(fold_data['label_PD'], fold_data['prob_class_1'])
+                    fold_roc_aucs.append(fold_auc)
+            
+            mean_roc_auc = np.mean(fold_roc_aucs)
+            std_roc_auc = np.std(fold_roc_aucs)
+        else:
+            # No fold information, compute overall ROC AUC
+            averaged_predictions = results_df.groupby('healthCode').agg({
+                'prob_class_1': 'mean',
+                'label_PD': 'first'
+            }).reset_index()
+            
+            overall_auc = roc_auc_score(averaged_predictions['label_PD'], averaged_predictions['prob_class_1'])
+            fold_roc_aucs = [overall_auc]
+            mean_roc_auc = overall_auc
+            std_roc_auc = 0.0
+        
+        return {
+            'mean_roc_auc': mean_roc_auc,
+            'std_roc_auc': std_roc_auc,
+            'fold_roc_aucs': fold_roc_aucs,
+            'averaged_predictions': averaged_predictions
+        }
+
     def test(self, test_audio_features: torch.Tensor, test_tapping_features: torch.Tensor, 
              test_labels: torch.Tensor):
         """

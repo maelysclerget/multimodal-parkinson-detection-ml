@@ -327,6 +327,102 @@ class MLP(nn.Module):
         return result_metrics
 
 
+    def test_by_averaging(self, test_df, fold_column='fold'):
+        """
+        Evaluate the model by averaging class 1 probabilities per healthCode and computing ROC AUC per fold.
+        
+        This method:
+        1. Predicts probabilities for all trials
+        2. Averages class 1 probabilities per healthCode
+        3. Computes ROC AUC per fold
+        4. Returns mean and standard deviation of ROC AUC across folds
+        
+        Args:
+            test_df: Pandas DataFrame containing feature columns plus 'healthCode', 'label_PD', 
+                    and fold_column. Each row represents one trial.
+            fold_column: Name of the column containing fold assignments (default: 'fold')
+                    
+        Returns:
+            Dictionary containing:
+                - mean_roc_auc: Mean ROC AUC across folds
+                - std_roc_auc: Standard deviation of ROC AUC across folds
+                - fold_roc_aucs: List of ROC AUC scores per fold
+                - averaged_predictions: DataFrame with averaged predictions per healthCode
+        """
+        # Make a copy to avoid modifying the original dataframe
+        test_df_copy = test_df.copy()
+        
+        # Extract metadata columns
+        healthcodes = test_df_copy['healthCode'].values
+        true_labels = test_df_copy['label_PD'].values
+        folds = test_df_copy[fold_column].values if fold_column in test_df_copy.columns else None
+        
+        # Drop metadata columns to get only numeric features
+        metadata_columns = ['filename', 'healthCode', 'record_id', 'label_PD', 'trial_id', 'row_id', 
+                     'trial_id_file1', 'trial_id_file2', 'trial_id_spec', 'trial_id_heatmap',
+                     'filename_file1', 'filename_file2', 'record_id_file1', 'record_id_file2',
+                     fold_column, 'fold']
+        feature_columns = [col for col in test_df_copy.columns if col not in metadata_columns]
+        test_features = test_df_copy[feature_columns].values.astype(np.float32)
+        
+        # Convert to torch tensor
+        test_features_tensor = torch.FloatTensor(test_features).to(self.device)
+        
+        # Get probabilities for each trial
+        self.eval()
+        with torch.no_grad():
+            probs = self.predict_proba(test_features_tensor).cpu().numpy()
+        
+        # Create a dataframe with healthCode, true_label, probabilities, and fold
+        results_dict = {
+            'healthCode': healthcodes,
+            'label_PD': true_labels,
+            'prob_class_1': probs[:, 1]
+        }
+        
+        if folds is not None:
+            results_dict['fold'] = folds
+        
+        results_df = pd.DataFrame(results_dict)
+        
+        # Group by healthCode (and fold if present) and average probabilities
+        if folds is not None:
+            averaged_predictions = results_df.groupby(['healthCode', 'fold']).agg({
+                'prob_class_1': 'mean',
+                'label_PD': 'first'
+            }).reset_index()
+            
+            # Compute ROC AUC per fold
+            fold_roc_aucs = []
+            unique_folds = sorted(averaged_predictions['fold'].unique())
+            
+            for fold in unique_folds:
+                fold_data = averaged_predictions[averaged_predictions['fold'] == fold]
+                if len(fold_data) > 0 and len(fold_data['label_PD'].unique()) > 1:
+                    fold_auc = roc_auc_score(fold_data['label_PD'], fold_data['prob_class_1'])
+                    fold_roc_aucs.append(fold_auc)
+            
+            mean_roc_auc = np.mean(fold_roc_aucs)
+            std_roc_auc = np.std(fold_roc_aucs)
+        else:
+            # No fold information, compute overall ROC AUC
+            averaged_predictions = results_df.groupby('healthCode').agg({
+                'prob_class_1': 'mean',
+                'label_PD': 'first'
+            }).reset_index()
+            
+            overall_auc = roc_auc_score(averaged_predictions['label_PD'], averaged_predictions['prob_class_1'])
+            fold_roc_aucs = [overall_auc]
+            mean_roc_auc = overall_auc
+            std_roc_auc = 0.0
+        
+        return {
+            'mean_roc_auc': mean_roc_auc,
+            'std_roc_auc': std_roc_auc,
+            'fold_roc_aucs': fold_roc_aucs,
+            'averaged_predictions': averaged_predictions
+        }
+
     def test(self, test_features: torch.Tensor, test_labels: torch.Tensor):
         """
         Evaluate the model on test data and return a dictionary of metrics.
