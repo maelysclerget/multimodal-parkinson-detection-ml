@@ -74,7 +74,7 @@ Each file explicitly indicates, **for every fold**, whether a patient belongs to
 Contains output figures and model performance summaries from audio-based experiments. 
 > These results are not included in the final report but are shown for additional exploratory insights.
 
-### `audio_model/utils/`
+### `audio_model`
 
 | File | Description |
 |------|-------------|
@@ -85,6 +85,12 @@ Contains output figures and model performance summaries from audio-based experim
 | `resnet_melspec_model.py` | ResNet model for mel-spectrogram classification |
 | `tcn_waveform_model.py` | Temporal Convolutional Network for raw waveform processing |
 
+### `audio_model/utils/`
+Contains 3 subfolders that allows to 
+- Explore and visualize
+- Extract features
+- Convert files to different files
+
 ---
 
 ## Tapping Module — Overview
@@ -93,7 +99,7 @@ Contains output figures and model performance summaries from audio-based experim
 Contains output figures and model performance summaries from tapping-based experiments. 
 > These results are not included in the final report but are shown for additional exploratory insights.
 
-### `tapping_model/utils/`
+### `tapping_model\utils`
 
 | File | Description |
 |------|-------------|
@@ -101,14 +107,17 @@ Contains output figures and model performance summaries from tapping-based exper
 | `data-loading.py` | Dataset loading and preprocessing utilities |
 | `data-exploration.ipynb` | Exploratory data analysis |
 | `tapping-heatmaps.py` | Generates spatial heatmaps from tap coordinates |
-| `CNN-heatmaps.py` | CNN for heatmap-based tapping classification |
-| `mlp-v1.py` | Initial MLP baseline experiments |
-| `mlp-v2.py` | **Final MLP model** with class imbalance handling |
 | `shap_values.py` | SHAP value computation |
 | `shap_aggregate.py` | Patient-level SHAP aggregation |
 | `grad_cam.py` | Grad-CAM for CNN interpretability |
 | `grad_cam_panel.py` | Grad-CAM visualization utilities |
 
+### `tapping_model`
+| File | Description |
+|------|-------------|
+| `CNN-heatmaps.py` | CNN for heatmap-based tapping classification |
+| `mlp-v1.py` | Initial MLP baseline experiments |
+| `mlp-v2.py` | **Final MLP model** with class imbalance handling |
 ---
 ## Fusion Module — Overview
 
@@ -123,7 +132,7 @@ Contains output figures and model performance summaries from multimodal fusion e
 | `EarlyFeatureFusionPipeline.ipynb` | Early fusion pipeline combining audio and tapping features |
 | `IntermediateFeatureFusionPipeline.ipynb` | Intermediate fusion using feature-level embeddings |
 | `IntermediateImageFusionPipeline.ipynb` | Intermediate fusion using image-based embeddings |
-| `LateFeatureFusionPipeline.ipynb` | Late fusion combining predictions from unimodal models |
+| `LateFeatureFusionPipeline.ipynb` | Late fusion combining predictions from feature-based unimodal models |
 
 ### `FusionModels/`
 
@@ -161,7 +170,7 @@ Before running any script:
 
 3. **Activate your Python environment** with required dependencies:
    - PyTorch
-   - timm (for image embedding extractions)
+   - Timm (for image embedding extractions)
 
 ### Example — Run the final tapping MLP model
 ```bash
