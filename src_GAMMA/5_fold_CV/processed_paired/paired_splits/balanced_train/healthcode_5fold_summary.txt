@@ -1,0 +1,43 @@
+SUMMARY: 5-Fold Cross-Validation (Paired Only)
+TRAIN: balanced 50/50 | VAL/TEST: from IMBALMED
+Val/Test source: /Users/ariannafrancesconi/Documents/dottorato/PROGETTI/Unpaired Data/data_paired/processed_audio/paired_imbalmed_splits/common_val_test_all_subdbs.csv
+======================================================================
+
+Overall class distribution (original dataset):
+  True: 302 (56.8%)
+  False: 230 (43.2%)
+
+Total patients: 532
+Seed: 42
+Train balancing: True
+
+Fold 0:
+  TRAIN (balanced): 276  False=138 (50.0%)  True=138 (50.0%)
+  VAL   (IMBALMED):  107  True=61 (57.0%)  False=46 (43.0%)
+  TEST  (IMBALMED):  107  True=61 (57.0%)  False=46 (43.0%)
+
+Fold 1:
+  TRAIN (balanced): 276  False=138 (50.0%)  True=138 (50.0%)
+  VAL   (IMBALMED):  106  True=60 (56.6%)  False=46 (43.4%)
+  TEST  (IMBALMED):  107  True=61 (57.0%)  False=46 (43.0%)
+
+Fold 2:
+  TRAIN (balanced): 276  True=138 (50.0%)  False=138 (50.0%)
+  VAL   (IMBALMED):  106  True=60 (56.6%)  False=46 (43.4%)
+  TEST  (IMBALMED):  106  True=60 (56.6%)  False=46 (43.4%)
+
+Fold 3:
+  TRAIN (balanced): 276  True=138 (50.0%)  False=138 (50.0%)
+  VAL   (IMBALMED):  106  True=60 (56.6%)  False=46 (43.4%)
+  TEST  (IMBALMED):  106  True=60 (56.6%)  False=46 (43.4%)
+
+Fold 4:
+  TRAIN (balanced): 276  True=138 (50.0%)  False=138 (50.0%)
+  VAL   (IMBALMED):  107  True=61 (57.0%)  False=46 (43.0%)
+  TEST  (IMBALMED):  106  True=60 (56.6%)  False=46 (43.4%)
+
+======================================================================
+AVERAGES per fold:
+  TRAIN: 276.0
+  VAL:   106.4
+  TEST:  106.4

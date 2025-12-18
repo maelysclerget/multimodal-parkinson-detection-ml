@@ -1,0 +1,9 @@
+Modality: paired
+Train balancing: True
+Val/Test source: IMBALMED (/Users/ariannafrancesconi/Documents/dottorato/PROGETTI/Unpaired Data/data_paired/processed_audio/paired_imbalmed_splits/common_val_test_all_subdbs.csv)
+Sources:
+- /Users/ariannafrancesconi/Documents/dottorato/PROGETTI/Unpaired Data/data_paired/interim_audio/linearSpec
+- /Users/ariannafrancesconi/Documents/dottorato/PROGETTI/Unpaired Data/data_paired/interim_audio/melSpec
+- /Users/ariannafrancesconi/Documents/dottorato/PROGETTI/Unpaired Data/data_paired/raw_tapping
+
+Total paired healthCodes: 532
