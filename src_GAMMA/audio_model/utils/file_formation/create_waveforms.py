@@ -1,17 +1,26 @@
+
 """
-Script to create normalized waveforms from WAV files
+Script to create normalized waveforms from WAV files for downstream ML tasks.
 
-This script:
-1. Loads WAV files and extracts the raw audio waveform
-2. Normalizes the waveform to [-1, 1] range (standard audio normalization)
-3. Saves as .npy files with the same filename
-4. Limits each healthCode to maximum 20 recordings (randomly sampled if more)
+Overview:
+---------
+This script processes a directory of WAV audio files, normalizes each waveform to the range [-1.0, 1.0], optionally trims silence from the beginning and end, and saves the result as a .npy file with the same base filename. It is designed for large-scale audio datasets, such as those used in biomedical or speech research, and ensures all audio is comparable regardless of original recording levels, bit depth, or volume.
 
-Normalization details:
-- The waveform is normalized to the range [-1.0, 1.0]
-- This is done by dividing by the maximum absolute value in the audio
-- This removes dependence on bit depth and recording volume
-- Makes all audio comparable regardless of original recording levels
+Features:
+- Loads WAV files (mono, float32) and extracts the raw audio waveform.
+- Normalizes each waveform to [-1, 1] by dividing by the maximum absolute value.
+- Optionally trims silence from the start/end using an energy threshold in dB.
+- Saves each waveform as a .npy file in the output directory, preserving the base filename.
+- Groups files by patient (healthCode) for statistics.
+- Example and batch processing modes included.
+
+Expected file structure:
+- Input directory: Contains .wav files named as {healthCode}_{record_id}_{column_id}.wav
+- Output directory: Will be created if it does not exist; .npy files will be saved here.
+
+Usage:
+------
+Set INPUT_DIR and OUTPUT_DIR in the main block. Run the script to process all files. Adjust silence trimming and threshold as needed.
 """
 
 import soundfile as sf
@@ -25,16 +34,16 @@ import random
 
 def trim_silence(waveform, threshold_db=-40, frame_length=2048, hop_length=512):
     """
-    Trim silence from the beginning and end of the waveform
-    
+    Trim silence from the beginning and end of the waveform using an energy threshold.
+
     Args:
-        waveform: Input audio waveform
-        threshold_db: Threshold in dB below which audio is considered silence
-        frame_length: Frame size for energy calculation
-        hop_length: Hop size between frames
-        
+        waveform (np.ndarray): Input audio waveform (1D float32 array).
+        threshold_db (float): Threshold in dB below which audio is considered silence (default: -40).
+        frame_length (int): Frame size for energy calculation (default: 2048).
+        hop_length (int): Hop size between frames (default: 512).
+
     Returns:
-        Trimmed waveform
+        np.ndarray: Trimmed waveform (1D float32 array).
     """
     # Convert threshold from dB to amplitude
     threshold = 10 ** (threshold_db / 20)
@@ -66,34 +75,27 @@ def trim_silence(waveform, threshold_db=-40, frame_length=2048, hop_length=512):
 
 def load_and_normalize_waveform(wav_path, trim_silence_flag=True, silence_threshold_db=-40):
     """
-    Load a WAV file and return normalized waveform with silence trimming
-    
+    Load a WAV file, optionally trim silence, and normalize the waveform to [-1, 1].
+
     Args:
-        wav_path: Path to WAV file
-        trim_silence_flag: Whether to trim silence from beginning/end
-        silence_threshold_db: Threshold in dB for silence detection (default: -40)
-        
+        wav_path (str or Path): Path to the input WAV file.
+        trim_silence_flag (bool): Whether to trim silence from beginning/end (default: True).
+        silence_threshold_db (float): Threshold in dB for silence detection (default: -40).
+
     Returns:
-        Normalized waveform array (values in [-1, 1])
-        Sample rate
-        
+        tuple: (waveform, sample_rate)
+            waveform (np.ndarray): 1D float32 array, normalized to [-1, 1].
+            sample_rate (int): Sample rate of the audio file.
+
     What is stored in the .npy file:
-        - A 1D NumPy array of float32 values
-        - Each value represents the amplitude at a specific time point
-        - Values are normalized to the range [-1.0, 1.0]
+        - 1D NumPy array of float32 values (amplitude at each time point)
+        - Values normalized to [-1.0, 1.0]
         - Array length = duration_seconds × sample_rate
         - Example: 10-second audio at 16000 Hz = array of 160,000 values
-        
-    Normalization steps:
-        1. Load waveform (soundfile normalizes to [-1, 1])
-        2. Trim silence from beginning and end (optional)
-        3. Normalize amplitude to [-1, 1] range
-        - All files are mono (single channel)
-        
-    Note on windowing/stride:
-        - NOT done in this file
-        - These are hyperparameters for your model's dataloader
-        - Apply windowing when loading .npy files during training
+
+    Note:
+        - All files are assumed mono (single channel).
+        - Windowing/stride is NOT performed here; apply during model training.
     """
     # Load audio - soundfile automatically normalizes to [-1, 1]
     # All files are mono, so waveform is a 1D array
@@ -113,13 +115,20 @@ def load_and_normalize_waveform(wav_path, trim_silence_flag=True, silence_thresh
 
 def parse_filename(filename):
     """
-    Parse filename to extract healthCode and record_id
-    
-    Format: {healthCode}_{record_id}_{column_id}.wav
-    Example: 0a76e74d-888a-4c9f-bc44-ddb1f73d64fa_440a0466-aa89-4054-ae6b-1e1436ac1238_audio_audio_m4a.wav
-    
+    Parse filename to extract healthCode and record_id.
+
+    Args:
+        filename (str): Filename of the WAV file (not full path).
+
+    Format:
+        {healthCode}_{record_id}_{column_id}.wav
+        Example: 0a76e74d-888a-4c9f-bc44-ddb1f73d64fa_440a0466-aa89-4054-ae6b-1e1436ac1238_audio_audio_m4a.wav
+
     Returns:
-        (healthCode, record_id, full_basename)
+        tuple: (healthCode, record_id, full_basename)
+            healthCode (str or None): Patient identifier, or None if not found.
+            record_id (str or None): Recording identifier, or None if not found.
+            full_basename (str): Filename without extension.
     """
     basename = os.path.splitext(filename)[0]
     parts = basename.split('_')
@@ -135,11 +144,16 @@ def parse_filename(filename):
 
 def process_single_wav_example(wav_path, output_dir):
     """
-    Example: Process a single WAV file and save normalized waveform
-    
+    Process a single WAV file: load, normalize, and save as .npy.
+
     Args:
-        wav_path: Path to input WAV file
-        output_dir: Directory to save output .npy file
+        wav_path (str or Path): Path to input WAV file.
+        output_dir (str or Path): Directory to save output .npy file. Will be created if it does not exist.
+
+    Returns:
+        tuple: (waveform, sample_rate)
+            waveform (np.ndarray): 1D float32 array, normalized to [-1, 1].
+            sample_rate (int): Sample rate of the audio file.
     """
     print(f"Processing single example: {wav_path}")
     
@@ -166,15 +180,20 @@ def process_single_wav_example(wav_path, output_dir):
 def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=None, seed=42, 
                                 trim_silence=True, silence_threshold_db=-40):
     """
-    Process all WAV files (no limit on recordings per healthCode)
-    
+    Process all WAV files in a directory, normalize, and save as .npy files.
+
     Args:
-        input_dir: Directory containing WAV files
-        output_dir: Directory to save normalized waveforms (.npy)
-        max_records_per_patient: Not used (kept for compatibility)
-        seed: Random seed (not used when no sampling)
-        trim_silence: Whether to trim silence from audio
-        silence_threshold_db: Threshold in dB for silence detection
+        input_dir (str or Path): Directory containing WAV files (searches recursively).
+        output_dir (str or Path): Directory to save normalized waveforms (.npy). Will be created if it does not exist.
+        max_records_per_patient (int or None): Not used (kept for compatibility; all files processed).
+        seed (int): Random seed (not used when no sampling).
+        trim_silence (bool): Whether to trim silence from audio (default: True).
+        silence_threshold_db (float): Threshold in dB for silence detection (default: -40).
+
+    Returns:
+        tuple: (successful, failed)
+            successful (int): Number of files processed successfully.
+            failed (int): Number of files that failed to process.
     """
     print(f"\n{'='*80}")
     print("Processing ALL WAV files (no patient limits)")
@@ -281,6 +300,7 @@ def process_all_wavs_with_limit(input_dir, output_dir, max_records_per_patient=N
 
 
 if __name__ == "__main__":
+    
     # Configuration
     INPUT_DIR = "/mloscratch/users/gnahas/data/wav"
     OUTPUT_DIR = "/mloscratch/users/gnahas/data/waveform_norm_silence_trimmed"

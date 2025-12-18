@@ -1,6 +1,17 @@
+
 """
-ResNet1D model for acoustic feature classification
-Simple single-branch ResNet1D architecture for all 154 features
+ResNet1D Model for Acoustic Feature Classification
+
+This script implements a simple 1D ResNet architecture for classifying patients using precomputed acoustic features.
+It supports 5-fold cross-validation, patient-level aggregation, and feature importance analysis.
+
+Main components:
+- AcousticFeaturesDataset: Loads feature vectors and labels for each patient
+- SingleResNet1D: The neural network model (with optional attention)
+- Training and evaluation loops
+- Patient-level aggregation and metrics
+- Feature importance computation and plotting
+- 5-fold cross-validation pipeline
 """
 
 import torch
@@ -19,13 +30,16 @@ warnings.filterwarnings('ignore')
 
 
 class AcousticFeaturesDataset(Dataset):
-    """Dataset for acoustic features with patient-level grouping"""
+    """
+    Dataset for loading acoustic features and labels, grouped by patient.
+    Handles NaN/infinite values and prints class distribution.
+    """
     def __init__(self, features_df, feature_columns, label_column='label_PD'):
         """
         Args:
-            features_df: DataFrame with features and labels
-            feature_columns: List of feature column names
-            label_column: Name of label column
+            features_df (DataFrame): DataFrame with features and labels.
+            feature_columns (list): List of feature column names.
+            label_column (str): Name of label column.
         """
         self.features = features_df[feature_columns].values.astype(np.float32)
         self.labels = features_df[label_column].values.astype(np.int64)
@@ -38,9 +52,19 @@ class AcousticFeaturesDataset(Dataset):
         print(f"  Class distribution: Control={np.sum(self.labels==0)}, PD={np.sum(self.labels==1)}")
     
     def __len__(self):
+        """
+        Returns:
+            int: Number of samples in the dataset.
+        """
         return len(self.labels)
-    
+
     def __getitem__(self, idx):
+        """
+        Args:
+            idx (int): Index of the sample.
+        Returns:
+            tuple: (features, label, health_code)
+        """
         features = torch.FloatTensor(self.features[idx])
         label = torch.LongTensor([self.labels[idx]])
         return features, label, self.health_codes[idx]
@@ -51,8 +75,17 @@ class AcousticFeaturesDataset(Dataset):
 # ============================================================================
 
 class ResidualBlock1D(nn.Module):
-    """1D Residual Block for feature sequences"""
+    """
+    1D Residual Block for feature vectors (fully connected, not convolutional).
+    Adds a skip connection for better gradient flow.
+    """
     def __init__(self, in_features, out_features, dropout=0.3):
+        """
+        Args:
+            in_features (int): Input feature size.
+            out_features (int): Output feature size.
+            dropout (float): Dropout probability.
+        """
         super().__init__()
         self.fc1 = nn.Linear(in_features, out_features)
         self.bn1 = nn.BatchNorm1d(out_features)
@@ -70,6 +103,12 @@ class ResidualBlock1D(nn.Module):
             )
     
     def forward(self, x):
+        """
+        Args:
+            x (Tensor): Input tensor of shape (batch, in_features).
+        Returns:
+            Tensor: Output tensor of shape (batch, out_features).
+        """
         residual = self.shortcut(x)
         
         out = self.fc1(x)
@@ -80,15 +119,22 @@ class ResidualBlock1D(nn.Module):
         out = self.fc2(out)
         out = self.bn2(out)
         
-        out += residual  # Residual connection
+        out += residual  
         out = self.relu(out)
         
         return out
 
 
 class SEBlock1D(nn.Module):
-    """Squeeze-and-Excitation block for feature channel attention"""
+    """
+    Squeeze-and-Excitation block for channel-wise feature attention.
+    """
     def __init__(self, features, reduction=4):
+        """
+        Args:
+            features (int): Number of input features.
+            reduction (int): Reduction ratio for bottleneck.
+        """
         super().__init__()
         self.fc1 = nn.Linear(features, features // reduction)
         self.fc2 = nn.Linear(features // reduction, features)
@@ -96,14 +142,18 @@ class SEBlock1D(nn.Module):
         self.relu = nn.ReLU()
     
     def forward(self, x):
-        # Global average pooling (already 1D, so just identity)
-        # x: (batch, features)
+        """
+        Args:
+            x (Tensor): Input tensor of shape (batch, features).
+        Returns:
+            Tensor: Output tensor with channel-wise attention applied.
+        """
         scale = self.fc1(x)
         scale = self.relu(scale)
         scale = self.fc2(scale)
         scale = self.sigmoid(scale)
         
-        return x * scale  # Channel-wise attention
+        return x * scale 
 
 
 # ============================================================================
@@ -112,11 +162,20 @@ class SEBlock1D(nn.Module):
 
 class SingleResNet1D(nn.Module):
     """
-    Simple ResNet1D for all features
-    Best for: Quick baseline, interpretable
+    Simple ResNet1D for all features.
+    Best for quick baselines and interpretable results.
+    Optionally includes channel attention.
     """
     def __init__(self, input_size, hidden_sizes=[256, 128, 64], 
                  num_classes=2, dropout=0.4, use_attention=True):
+        """
+        Args:
+            input_size (int): Number of input features.
+            hidden_sizes (list): List of hidden layer sizes.
+            num_classes (int): Number of output classes.
+            dropout (float): Dropout probability.
+            use_attention (bool): Whether to use SE attention block.
+        """
         super().__init__()
         
         # Input projection
@@ -146,6 +205,12 @@ class SingleResNet1D(nn.Module):
         )
     
     def forward(self, x):
+        """
+        Args:
+            x (Tensor): Input tensor of shape (batch, input_size).
+        Returns:
+            Tensor: Output logits of shape (batch, num_classes).
+        """
         x = self.input_layer(x)
         
         for block in self.res_blocks:
@@ -158,15 +223,21 @@ class SingleResNet1D(nn.Module):
         return out
 
 
-
-
-
 # ============================================================================
 # TRAINING & EVALUATION
 # ============================================================================
 
 def train_epoch(model, dataloader, criterion, optimizer, device):
-    """Train one epoch"""
+    """
+    Args:
+        model (nn.Module): Model to train.
+        dataloader (DataLoader): Training data loader.
+        criterion: Loss function.
+        optimizer: Optimizer.
+        device: Device to use.
+    Returns:
+        tuple: (average loss, accuracy)
+    """
     model.train()
     total_loss, correct, total = 0, 0, 0
     
@@ -188,7 +259,14 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
 
 
 def evaluate(model, dataloader, device):
-    """Evaluate with patient-level aggregation"""
+    """
+    Args:
+        model (nn.Module): Model to evaluate.
+        dataloader (DataLoader): Data loader.
+        device: Device to use.
+    Returns:
+        dict: Metrics for both majority vote and probability threshold aggregation.
+    """
     model.eval()
     all_probs, all_preds, all_labels, all_health_codes = [], [], [], []
     
@@ -276,7 +354,20 @@ def evaluate(model, dataloader, device):
 
 def train_model(model, train_loader, val_loader, num_epochs, learning_rate,
                 device, patience, fold_num, output_dir):
-    """Training with early stopping on F1-score"""
+    """
+    Args:
+        model (nn.Module): Model to train.
+        train_loader (DataLoader): Training data loader.
+        val_loader (DataLoader): Validation data loader.
+        num_epochs (int): Maximum number of epochs.
+        learning_rate (float): Initial learning rate.
+        device: Device to use.
+        patience (int): Early stopping patience.
+        fold_num (int): Fold number for saving checkpoints.
+        output_dir (str): Directory to save checkpoints.
+    Returns:
+        tuple: (trained model, best validation metrics, training history)
+    """
     pth_dir = os.path.join(output_dir, 'PTH')
     os.makedirs(pth_dir, exist_ok=True)
     
@@ -312,7 +403,7 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate,
         val_auc = val_metrics['patient_auc']
         val_f1 = f1_score(val_metrics['patient_labels'], val_metrics['patient_preds'], zero_division=0)
 
-        scheduler.step(val_auc)  # Track AUC instead of F1
+        scheduler.step(val_auc)  
         current_lr = optimizer.param_groups[0]['lr']
 
         history['epoch'].append(epoch + 1)
@@ -378,7 +469,14 @@ def train_model(model, train_loader, val_loader, num_epochs, learning_rate,
 
 
 def get_detailed_metrics(labels, preds, probs):
-    """Calculate detailed metrics"""
+    """
+    Args:
+        labels (array): True labels.
+        preds (array): Predicted labels.
+        probs (array): Predicted probabilities for positive class.
+    Returns:
+        dict: F1, precision, recall, and AUC.
+    """
     f1 = f1_score(labels, preds, zero_division=0)
     precision = precision_score(labels, preds, zero_division=0)
     recall = recall_score(labels, preds, zero_division=0)
@@ -390,7 +488,14 @@ def get_detailed_metrics(labels, preds, probs):
 
 
 def plot_confusion_matrix(cm, filepath, title):
-    """Plot confusion matrix"""
+    """
+    Args:
+        cm (array): Confusion matrix.
+        filepath (str): Path to save the plot.
+        title (str): Plot title.
+    Returns:
+        None
+    """
     plt.figure(figsize=(8, 6))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', cbar=False,
                 xticklabels=['Control', 'PD'], yticklabels=['Control', 'PD'])
@@ -404,8 +509,13 @@ def plot_confusion_matrix(cm, filepath, title):
 
 def compute_feature_importance(model, dataloader, device, feature_columns):
     """
-    Compute feature importance using input gradient magnitude
-    Simple and fast method: higher gradient = more important
+    Args:
+        model (nn.Module): Trained model.
+        dataloader (DataLoader): Data loader.
+        device: Device to use.
+        feature_columns (list): List of feature names.
+    Returns:
+        DataFrame: Feature importance scores (sorted).
     """
     model.eval()
     total_importance = np.zeros(len(feature_columns))
@@ -442,7 +552,13 @@ def compute_feature_importance(model, dataloader, device, feature_columns):
 
 def plot_feature_importance(importance_df, filepath, title, top_n=30):
     """
-    Simple bar chart of most important features
+    Args:
+        importance_df (DataFrame): Feature importance scores.
+        filepath (str): Path to save the plot.
+        title (str): Plot title.
+        top_n (int): Number of top features to plot.
+    Returns:
+        None
     """
     plt.figure(figsize=(10, max(8, top_n * 0.3)))
     top_features = importance_df.head(top_n)
@@ -473,11 +589,21 @@ def run_5fold_cv(features_csv, label_csv, train_split_csv, val_test_split_csv,
                  hidden_sizes=[256, 128, 64], dropout=0.4, patience=15,
                  device='cuda', output_dir='resnet1d_results'):
     """
-    Run 5-fold cross-validation
-    
     Args:
-        features_csv: Path to acoustic features CSV (no labels)
-        label_csv: Path to paired_healthcode.csv (healthCode, label_PD, modality)
+        features_csv (str): Path to acoustic features CSV.
+        label_csv (str): Path to paired_healthcode.csv.
+        train_split_csv (str): Path to train split CSV.
+        val_test_split_csv (str): Path to val/test split CSV.
+        batch_size (int): Batch size for training.
+        num_epochs (int): Maximum number of epochs.
+        learning_rate (float): Initial learning rate.
+        hidden_sizes (list): List of hidden layer sizes.
+        dropout (float): Dropout probability.
+        patience (int): Early stopping patience.
+        device: Device to train on ('cuda' or 'cpu').
+        output_dir (str): Directory to save results and plots.
+    Returns:
+        DataFrame: Results for all folds.
     """
     os.makedirs(output_dir, exist_ok=True)
     os.makedirs(os.path.join(output_dir, 'Plots'), exist_ok=True)
@@ -490,7 +616,7 @@ def run_5fold_cv(features_csv, label_csv, train_split_csv, val_test_split_csv,
     print(f"  Hidden Sizes: {hidden_sizes}")
     
     # Load labels
-    label_df = pd.read_csv(label_csv, sep=';')
+    label_df = pd.read_csv(label_csv, sep=',')
     healthcode_to_label = dict(zip(label_df['healthCode'], label_df['label_PD']))
     
     # Load features
@@ -655,16 +781,17 @@ def run_5fold_cv(features_csv, label_csv, train_split_csv, val_test_split_csv,
 
 
 if __name__ == "__main__":
-    # Configuration
-    FEATURES_CSV = "/mloscratch/users/gnahas/data/features/acoustic_features_vf.csv"
-    LABEL_CSV = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
-    TRAIN_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
-    VAL_TEST_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
     
+    # Set up file paths and hyperparameters
+    FEATURES_CSV = "/mloscratch/users/gnahas/data/features/acoustic_features_vf.csv"
+    LABEL_CSV = "/tremor2tensor/src_GAMMA/paired_healthcode.csv"
+    TRAIN_SPLIT_CSV = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
+    VAL_TEST_SPLIT_CSV = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-    
-    # Run 5-fold CV with single ResNet1D
+
+    # Run 5-fold cross-validation with single ResNet1D
     results = run_5fold_cv(
         features_csv=FEATURES_CSV,
         label_csv=LABEL_CSV,

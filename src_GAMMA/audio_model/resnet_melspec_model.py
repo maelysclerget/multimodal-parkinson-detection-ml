@@ -1,7 +1,17 @@
+
 """
-ResNet18 (pre-trained) model for mel spectrogram classification
-Uses ImageNet pre-trained weights with transfer learning
-5-fold CV with recording and patient-level aggregation
+ResNet18 Model for Mel Spectrogram Classification
+
+This script implements a ResNet18-based classifier for mel spectrogram images of audio recordings.
+It uses ImageNet pre-trained weights and transfer learning, with options to freeze early layers.
+Supports 5-fold cross-validation, patient-level and recording-level aggregation, and detailed metrics.
+
+Main components:
+- MelSpectrogramDataset: Loads mel spectrogram images and labels
+- ResNetMelSpectrogramClassifier: The neural network model (transfer learning)
+- Training and evaluation loops
+- Patient-level and recording-level metrics
+- 5-fold cross-validation pipeline with result saving and plotting
 """
 
 import torch
@@ -22,55 +32,61 @@ warnings.filterwarnings('ignore')
 
 class MelSpectrogramDataset(Dataset):
     """
-    Dataset for loading pre-computed mel spectrogram JPG images
-    Converts grayscale to 3-channel for pre-trained ResNet
+    Dataset for loading pre-computed mel spectrogram JPG images.
+    Converts grayscale to 3-channel RGB for pre-trained ResNet.
     """
     def __init__(self, file_paths, labels, health_codes):
         """
         Args:
-            file_paths: List of paths to .jpg mel spectrogram files
-            labels: List of labels (0 or 1 for binary classification)
-            health_codes: List of health codes for patient-level grouping
+            file_paths (list): Paths to .jpg mel spectrogram files.
+            labels (list): Labels (0 or 1) for binary classification.
+            health_codes (list): Health codes for patient-level grouping.
         """
         self.file_paths = file_paths
         self.labels = labels
         self.health_codes = health_codes
     
     def __len__(self):
+        """
+        Returns:
+            int: Number of samples in the dataset.
+        """
         return len(self.file_paths)
-    
+
     def __getitem__(self, idx):
+        """
+        Args:
+            idx (int): Index of the sample.
+        Returns:
+            tuple: (mel_spec_tensor, label, health_code)
+        """
         # Load JPG mel spectrogram
         img = Image.open(self.file_paths[idx]).convert('RGB')  # RGB for pre-trained model
         img_array = np.array(img, dtype=np.float32)
-        
         # Normalize to [0, 1]
         img_array = img_array / 255.0
-        
         # ImageNet normalization (standard for pre-trained models)
         mean = np.array([0.485, 0.456, 0.406])
         std = np.array([0.229, 0.224, 0.225])
         img_array = (img_array - mean) / std
-        
         # Convert to tensor: (H, W, C) -> (C, H, W)
         mel_spec_tensor = torch.FloatTensor(img_array).permute(2, 0, 1)
         label = torch.LongTensor([self.labels[idx]])
-        
         return mel_spec_tensor, label, self.health_codes[idx]
 
 
 class ResNetMelSpectrogramClassifier(nn.Module):
     """
-    ResNet18 with pre-trained ImageNet weights
-    Adapted for binary classification
+    ResNet18 with pre-trained ImageNet weights, adapted for binary classification.
+    Optionally freezes early layers for transfer learning.
     """
     def __init__(self, num_classes=2, dropout=0.5, pretrained=True, freeze_layers=True):
         """
         Args:
-            num_classes: Number of output classes (2 for binary classification)
-            dropout: Dropout probability for final classifier
-            pretrained: Whether to use ImageNet pre-trained weights
-            freeze_layers: Whether to freeze early convolutional layers
+            num_classes (int): Number of output classes.
+            dropout (float): Dropout probability for final classifier.
+            pretrained (bool): Use ImageNet pre-trained weights if True.
+            freeze_layers (bool): Freeze early convolutional layers if True.
         """
         super(ResNetMelSpectrogramClassifier, self).__init__()
         
@@ -94,8 +110,6 @@ class ResNetMelSpectrogramClassifier(nn.Module):
         # Get number of features from ResNet's final layer
         num_features = self.resnet.fc.in_features
         
-        # Replace final fully connected layer with custom classifier
-        # Add dropout for regularization
         self.resnet.fc = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(num_features, num_classes)
@@ -103,20 +117,24 @@ class ResNetMelSpectrogramClassifier(nn.Module):
     
     def forward(self, x):
         """
-        Forward pass
-        
         Args:
-            x: Input tensor of shape (batch_size, 3, H, W)
-        
+            x (Tensor): Input tensor of shape (batch_size, 3, H, W).
         Returns:
-            Output logits of shape (batch_size, num_classes)
+            Tensor: Output logits of shape (batch_size, num_classes).
         """
         return self.resnet(x)
 
 
 def train_epoch(model, dataloader, criterion, optimizer, device):
     """
-    Train for one epoch
+    Args:
+        model (nn.Module): Model to train.
+        dataloader (DataLoader): Training data loader.
+        criterion: Loss function.
+        optimizer: Optimizer.
+        device: Device to use.
+    Returns:
+        tuple: (average loss, accuracy)
     """
     model.train()
     total_loss = 0
@@ -150,10 +168,13 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
 
 def evaluate(model, dataloader, device, aggregation_method='majority_vote'):
     """
-    Evaluate model at recording and patient level
-    
     Args:
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
+        model (nn.Module): Model to evaluate.
+        dataloader (DataLoader): Data loader.
+        device: Device to use.
+        aggregation_method (str): 'majority_vote' or 'average' for patient-level aggregation.
+    Returns:
+        dict: Metrics for both recording and patient level.
     """
     model.eval()
     
@@ -206,7 +227,7 @@ def evaluate(model, dataloader, device, aggregation_method='majority_vote'):
     
     for hc in unique_health_codes:
         mask = all_health_codes == hc
-        patient_label = all_labels[mask][0]  # All recordings from same patient have same label
+        patient_label = all_labels[mask][0]  
         
         # Average probability for AUC calculation
         patient_prob = np.mean(all_probs[mask])
@@ -215,7 +236,7 @@ def evaluate(model, dataloader, device, aggregation_method='majority_vote'):
         if aggregation_method == 'average':
             # Use averaged probability with threshold
             patient_pred = 1 if patient_prob >= 0.5 else 0
-        else:  # majority_vote
+        else:  
             # Majority vote: most common prediction
             rec_preds = all_preds[mask]
             vote_counts = Counter(rec_preds)
@@ -274,13 +295,18 @@ def train_model(
     aggregation_method='majority_vote'
 ):
     """
-    Training loop with dynamic learning rate, early stopping based on validation patient-level AUC
-    Multi-GPU support with DataParallel
-    
     Args:
-        patience: Number of epochs without improvement before early stopping
-        min_epochs: Minimum number of epochs before early stopping is allowed (warm-up period)
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
+        model (nn.Module): Model to train.
+        train_loader (DataLoader): Training data loader.
+        val_loader (DataLoader): Validation data loader.
+        num_epochs (int): Maximum number of epochs.
+        learning_rate (float): Initial learning rate.
+        device: Device to use.
+        patience (int): Early stopping patience.
+        min_epochs (int): Minimum epochs before early stopping.
+        aggregation_method (str): 'majority_vote' or 'average' for patient-level aggregation.
+    Returns:
+        tuple: (trained model, best validation metrics, training history)
     """
     # Multi-GPU setup
     if device.type == 'cuda' and torch.cuda.device_count() > 1:
@@ -293,11 +319,10 @@ def train_model(
     # Data: 77% PD (label=1), 23% Control (label=0)
     # Weight minority class (Control) higher: [Control_weight, PD_weight] = [3.25, 1.0]
     class_weights = torch.FloatTensor([3.25, 1.0]).to(device)
+    
     # Label smoothing prevents overconfident predictions (0.1 smoothing)
     criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
     
-    # Lower learning rate for fine-tuning pre-trained model
-    # Increased weight decay from 5e-5 to 1e-4 for stronger regularization
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-4)
     
     # Learning rate scheduler: reduce LR when validation AUC plateaus
@@ -352,6 +377,7 @@ def train_model(
             best_val_auc = val_metrics['patient_auc']
             best_metrics = val_metrics.copy()
             epochs_without_improvement = 0
+            
             # Handle DataParallel wrapper
             if isinstance(model, nn.DataParallel):
                 best_model_state = model.module.state_dict().copy()
@@ -393,26 +419,23 @@ def run_5fold_cv(
     pretrained=True
 ):
     """
-    Run 5-fold cross-validation with ResNet18
-    
     Args:
-        melspec_dir: Directory containing mel spectrogram JPG files
-        label_csv: Path to CSV file with healthCode and labels
-        train_split_csv: Path to train split CSV
-        val_test_split_csv: Path to val/test split CSV
-        batch_size: Batch size for training
-        num_epochs: Maximum number of epochs
-        learning_rate: Initial learning rate (lower for pre-trained models)
-        dropout: Dropout probability
-        patience: Early stopping patience (epochs without improvement)
-        min_epochs: Minimum epochs before early stopping is allowed
-        device: Device to train on ('cuda' or 'cpu')
-        output_dir: Directory to save results and plots
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
-        pretrained: Whether to use ImageNet pre-trained weights
-    
+        melspec_dir (str): Directory with mel spectrogram JPG files.
+        label_csv (str): Path to CSV file with healthCode and labels.
+        train_split_csv (str): Path to train split CSV.
+        val_test_split_csv (str): Path to val/test split CSV.
+        batch_size (int): Batch size for training.
+        num_epochs (int): Maximum number of epochs.
+        learning_rate (float): Initial learning rate.
+        dropout (float): Dropout probability.
+        patience (int): Early stopping patience.
+        min_epochs (int): Minimum epochs before early stopping.
+        device: Device to train on ('cuda' or 'cpu').
+        output_dir (str): Directory to save results and plots.
+        aggregation_method (str): 'majority_vote' or 'average' for patient-level aggregation.
+        pretrained (bool): Use ImageNet pre-trained weights if True.
     Returns:
-        DataFrame with results for all folds
+        DataFrame: Results for all folds.
     """
     # Create output directory and plots subdirectory
     os.makedirs(output_dir, exist_ok=True)
@@ -423,7 +446,7 @@ def run_5fold_cv(
     
     # Load labels
     print("Loading labels...")
-    label_df = pd.read_csv(label_csv, sep=';')
+    label_df = pd.read_csv(label_csv, sep=',')
     healthcode_to_label = dict(zip(label_df['healthCode'], label_df['label_PD']))
     print(f"  Total healthCodes with labels: {len(healthcode_to_label)}")
     
@@ -763,26 +786,22 @@ def run_5fold_cv(
 
 
 if __name__ == "__main__":
-    """
-    5-fold cross-validation with ResNet18 (pre-trained) and recording/patient-level results
-    """
-    
-    # Paths
+    # Set up file paths and hyperparameters
     MELSPEC_DIR = "/mloscratch/users/gnahas/data/melSpec"
-    LABEL_CSV = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
-    TRAIN_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
-    VAL_TEST_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
-    
+    LABEL_CSV = "/tremor2tensor/src_GAMMA/paired_healthcode.csv"
+    TRAIN_SPLIT_CSV = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
+    VAL_TEST_SPLIT_CSV = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
+
     # Hyperparameters (optimized for pre-trained ResNet with anti-overfitting)
-    BATCH_SIZE = 64  # Total batch size (splits across GPUs with DataParallel)
+    BATCH_SIZE = 64
     NUM_EPOCHS = 100
-    LEARNING_RATE = 0.0003  # Lower LR for fine-tuning pre-trained model
-    DROPOUT = 0.5  # Increased from 0.35 to prevent overfitting
-    PATIENCE = 25  # Increased for transfer learning
-    MIN_EPOCHS = 15  # Warm-up period before early stopping
+    LEARNING_RATE = 0.0003
+    DROPOUT = 0.5
+    PATIENCE = 25
+    MIN_EPOCHS = 15
     AGGREGATION_METHOD = 'average'  # or 'majority_vote'
-    PRETRAINED = True  # Use ImageNet pre-trained weights
-    
+    PRETRAINED = True
+
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
@@ -791,7 +810,7 @@ if __name__ == "__main__":
         for i in range(torch.cuda.device_count()):
             print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
     print()
-    
+
     # Run 5-fold cross-validation
     results_df = run_5fold_cv(
         melspec_dir=MELSPEC_DIR,

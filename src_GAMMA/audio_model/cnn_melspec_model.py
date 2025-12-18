@@ -1,6 +1,25 @@
+
 """
-CNN model for mel spectrogram classification
-Basic 5-fold CV with recording and patient-level aggregation
+CNN Model for Mel Spectrogram-Based Audio Classification
+
+This module implements a convolutional neural network (CNN) pipeline for classifying audio recordings using pre-computed mel spectrogram images. The workflow is designed for biomedical or clinical research settings, where each audio sample is associated with a patient (identified by a health code), and the goal is to distinguish between two classes (e.g., disease vs. control).
+
+Key features:
+- Loads mel spectrograms as grayscale JPG images and organizes them into PyTorch datasets.
+- Defines a simple but effective CNN architecture for 2D spectrogram classification.
+- Supports 5-fold cross-validation with patient-level splits, ensuring no data leakage between train/val/test sets.
+- Aggregates predictions at both the recording and patient level, supporting both majority vote and average probability methods.
+- Handles class imbalance via weighted loss.
+- Includes dynamic learning rate scheduling, early stopping, and multi-GPU support.
+- Outputs detailed metrics, training curves, and summary plots for each fold.
+
+Expected data format:
+- Mel spectrograms: Grayscale JPG images named as <healthCode>_<recordingId>_audio_audio_m4a.jpg
+- Label CSV: Contains columns 'healthCode' and 'label_PD' (0 or 1)
+- Fold split CSVs: Specify which health codes belong to each fold and subset (train/val/test)
+
+Usage:
+Run this script directly to perform 5-fold cross-validation and save results/plots to the specified output directory. Adjust paths and hyperparameters as needed in the main block.
 """
 
 import torch
@@ -20,7 +39,11 @@ warnings.filterwarnings('ignore')
 
 class MelSpectrogramDataset(Dataset):
     """
-    Dataset for loading pre-computed mel spectrogram JPG images
+    Dataset for loading pre-computed mel spectrogram JPG images.
+    Args:
+        file_paths (list of str): List of paths to .jpg mel spectrogram files.
+        labels (list of int): List of labels (0 or 1 for binary classification).
+        health_codes (list of str): List of health codes for patient-level grouping.
     """
     def __init__(self, file_paths, labels, health_codes):
         """
@@ -34,26 +57,39 @@ class MelSpectrogramDataset(Dataset):
         self.health_codes = health_codes
     
     def __len__(self):
+        """
+        Returns:
+            int: Number of samples in the dataset.
+        """
         return len(self.file_paths)
     
     def __getitem__(self, idx):
+        """
+        Args:
+            idx (int): Index of the sample to retrieve.
+        Returns:
+            tuple: (mel_spec_tensor, label tensor, health code)
+                mel_spec_tensor (torch.Tensor): Shape (1, H, W), normalized to [0, 1].
+                label (torch.Tensor): Shape (1,).
+                health_code (str): Patient health code.
+        """
         # Load JPG mel spectrogram
         img = Image.open(self.file_paths[idx]).convert('L')  # Grayscale
         img_array = np.array(img, dtype=np.float32)
-        
         # Normalize to [0, 1]
         img_array = img_array / 255.0
-        
         # Convert to tensor and add channel dimension
         mel_spec_tensor = torch.FloatTensor(img_array).unsqueeze(0)  # Shape: (1, H, W)
         label = torch.LongTensor([self.labels[idx]])
-        
         return mel_spec_tensor, label, self.health_codes[idx]
 
 
 class CNNMelSpectrogramClassifier(nn.Module):
     """
-    Simple CNN classifier for mel spectrograms
+    Simple CNN classifier for mel spectrograms.
+    Args:
+        num_classes (int): Number of output classes (2 for binary classification).
+        dropout (float): Dropout probability.
     """
     def __init__(self, num_classes=2, dropout=0.5):
         """
@@ -104,13 +140,11 @@ class CNNMelSpectrogramClassifier(nn.Module):
     
     def forward(self, x):
         """
-        Forward pass
-        
+        Forward pass.
         Args:
-            x: Input tensor of shape (batch_size, 1, n_mels, time)
-        
+            x (torch.Tensor): Input tensor of shape (batch_size, 1, n_mels, time).
         Returns:
-            Output logits of shape (batch_size, num_classes)
+            torch.Tensor: Output logits of shape (batch_size, num_classes).
         """
         # Conv block 1
         x = self.conv1(x)
@@ -160,7 +194,15 @@ class CNNMelSpectrogramClassifier(nn.Module):
 
 def train_epoch(model, dataloader, criterion, optimizer, device):
     """
-    Train for one epoch
+    Train the model for one epoch.
+    Args:
+        model (nn.Module): The model to train.
+        dataloader (DataLoader): DataLoader for training data.
+        criterion: Loss function.
+        optimizer: Optimizer.
+        device: Device to run training on.
+    Returns:
+        tuple: (average loss, accuracy in percent)
     """
     model.train()
     total_loss = 0
@@ -194,10 +236,14 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
 
 def evaluate(model, dataloader, device, aggregation_method='majority_vote'):
     """
-    Evaluate model at recording and patient level
-    
+    Evaluate model at recording and patient level.
     Args:
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
+        model (nn.Module): The model to evaluate.
+        dataloader (DataLoader): DataLoader for evaluation data.
+        device: Device to run evaluation on.
+        aggregation_method (str): 'majority_vote' or 'average' for patient-level aggregation.
+    Returns:
+        dict: Dictionary with recording-level and patient-level metrics (accuracy, AUC, sensitivity, specificity, confusion matrix components).
     """
     model.eval()
     
@@ -317,11 +363,19 @@ def train_model(
     aggregation_method='majority_vote'
 ):
     """
-    Training loop with dynamic learning rate, early stopping based on validation patient-level AUC
-    Multi-GPU support with DataParallel and mixed precision training
-    
+    Training loop with dynamic learning rate, early stopping based on validation patient-level AUC.
+    Multi-GPU support with DataParallel and mixed precision training.
     Args:
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
+        model (nn.Module): Model to train.
+        train_loader (DataLoader): Training data loader.
+        val_loader (DataLoader): Validation data loader.
+        num_epochs (int): Maximum number of epochs.
+        learning_rate (float): Initial learning rate.
+        device (str or torch.device): Device to train on.
+        patience (int): Early stopping patience.
+        aggregation_method (str): 'majority_vote' or 'average' for patient-level aggregation.
+    Returns:
+        tuple: (trained model, best validation metrics dict, training history dict)
     """
     # Multi-GPU setup
     if device.type == 'cuda' and torch.cuda.device_count() > 1:
@@ -428,24 +482,22 @@ def run_5fold_cv(
     aggregation_method='majority_vote'
 ):
     """
-    Run 5-fold cross-validation
-    
+    Run 5-fold cross-validation.
     Args:
-        melspec_dir: Directory containing mel spectrogram JPG files
-        label_csv: Path to CSV file with healthCode and labels
-        train_split_csv: Path to train split CSV
-        val_test_split_csv: Path to val/test split CSV
-        batch_size: Batch size for training
-        num_epochs: Maximum number of epochs
-        learning_rate: Initial learning rate
-        dropout: Dropout probability
-        patience: Early stopping patience
-        device: Device to train on ('cuda' or 'cpu')
-        output_dir: Directory to save results and plots
-        aggregation_method: 'majority_vote' or 'average' for patient-level aggregation
-    
+        melspec_dir (str): Directory containing mel spectrogram JPG files.
+        label_csv (str): Path to CSV file with healthCode and labels.
+        train_split_csv (str): Path to train split CSV.
+        val_test_split_csv (str): Path to val/test split CSV.
+        batch_size (int): Batch size for training.
+        num_epochs (int): Maximum number of epochs.
+        learning_rate (float): Initial learning rate.
+        dropout (float): Dropout probability.
+        patience (int): Early stopping patience.
+        device (str or torch.device): Device to train on ('cuda' or 'cpu').
+        output_dir (str): Directory to save results and plots.
+        aggregation_method (str): 'majority_vote' or 'average' for patient-level aggregation.
     Returns:
-        DataFrame with results for all folds
+        pd.DataFrame: DataFrame with results for all folds.
     """
     # Create output directory and plots subdirectory
     os.makedirs(output_dir, exist_ok=True)
@@ -455,7 +507,7 @@ def run_5fold_cv(
     print(f"Plots will be saved to: {plots_dir}")
     # Load labels
     print("Loading labels...")
-    label_df = pd.read_csv(label_csv, sep=';')
+    label_df = pd.read_csv(label_csv, sep=',')
     healthcode_to_label = dict(zip(label_df['healthCode'], label_df['label_PD']))
     print(f"  Total healthCodes with labels: {len(healthcode_to_label)}")
     
@@ -798,10 +850,10 @@ if __name__ == "__main__":
     
     # Paths
     MELSPEC_DIR = "/mloscratch/users/gnahas/data/melSpec"
-    LABEL_CSV = "/mloscratch/users/gnahas/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
-    TRAIN_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
-    VAL_TEST_SPLIT_CSV = "/mloscratch/users/gnahas/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
-    
+    LABEL_CSV = "/tremor2tensor/src_GAMMA/paired_healthcode.csv"
+    TRAIN_SPLIT_CSV = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
+    VAL_TEST_SPLIT_CSV = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
+
     # Hyperparameters
     BATCH_SIZE = 64  # Total batch size (splits across GPUs with DataParallel)
     NUM_EPOCHS = 100
