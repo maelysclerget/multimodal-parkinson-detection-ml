@@ -61,9 +61,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # ===== Paths and Configuration =====
-train_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_train.csv"
-valtest_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_val_test.csv"
-labels_path = "/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
+train_split_path = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
+valtest_split_path = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
+labels_path = "/tremor2tensor/src_GAMMA/paired_healthcode.csv"
 heatmap_base_path = "/mloscratch/users/clerget/data/tapping_heatmaps"
 
 NUM_FOLDS = 5
@@ -71,7 +71,7 @@ batch_size = 32
 
 # ===== SELECT CLASS IMBALANCE HANDLING METHOD =====
 # Change to one of: 'weighted_sampler', 'class_weights', 'undersampling', 'baseline'
-BALANCING_METHOD = 'undersampling'
+BALANCING_METHOD = 'class_weights'
 
 # ===== Image Preprocessing =====# ===== Image Transform =====
 image_transform = transforms.Compose([

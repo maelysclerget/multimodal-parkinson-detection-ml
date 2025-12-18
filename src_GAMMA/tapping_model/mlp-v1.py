@@ -63,9 +63,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # ===== Paths and Configurations =====
-train_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_train.csv"
-valtest_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_val_test.csv"
-labels_path = "/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
+train_split_path = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
+valtest_split_path = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
+labels_path = "/tremor2tensor/src_GAMMA/paired_healthcode.csv"
 
 basic_features_path = "/mloscratch/users/clerget/data/csv/tapping_statistical_features_session.csv"
 advanced_features_path = "/mloscratch/users/clerget/data/csv/tapping_advanced_features_session.csv"
@@ -405,7 +405,7 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     X_val_t = torch.from_numpy(X_val)
     X_test_t = torch.from_numpy(X_test)
     
-    y_train_t = torch.from_numpy(y_train).long()  # Convert to long for CrossEntropyLoss
+    y_train_t = torch.from_numpy(y_train).long()  
     y_val_t = torch.from_numpy(y_val).long()
     y_test_t = torch.from_numpy(y_test).long()
     
@@ -464,8 +464,8 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
             for X_batch, y_batch in val_loader:
                 X_batch, y_batch = X_batch.to(device), y_batch.to(device)
                 y_logits = model(X_batch)
-                y_proba = torch.softmax(y_logits, dim=1)  # Get probabilities
-                val_preds_proba.extend(y_proba[:, 1].cpu().numpy().tolist())  # Probability of class 1
+                y_proba = torch.softmax(y_logits, dim=1) 
+                val_preds_proba.extend(y_proba[:, 1].cpu().numpy().tolist())  
                 val_labels.extend(y_batch.cpu().numpy().tolist())
         
         val_auc = roc_auc_score(val_labels, val_preds_proba)
@@ -474,7 +474,7 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
         if val_auc > best_val_auc:
             best_val_auc = val_auc
             patience_counter = 0
-            best_model_state = model.state_dict().copy()  # Save best model based on VAL
+            best_model_state = model.state_dict().copy()  
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -493,8 +493,8 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
         for X_batch, y_batch in test_loader:
             X_batch = X_batch.to(device)
             y_logits = model(X_batch)
-            y_proba = torch.softmax(y_logits, dim=1)  # Get probabilities
-            y_pred_proba_class1 = y_proba[:, 1]  # Probability of class 1
+            y_proba = torch.softmax(y_logits, dim=1) 
+            y_pred_proba_class1 = y_proba[:, 1]  
             test_preds_proba.extend(y_pred_proba_class1.cpu().numpy().tolist())
             test_preds_binary.extend((y_pred_proba_class1 > 0.5).cpu().numpy().tolist())
             test_labels.extend(y_batch.numpy().tolist())
@@ -621,7 +621,7 @@ def hyperparameter_search(features_df, model_name, model_prefix, num_folds=5, nu
     best_hyperparams = None
     search_results = []
     
-    for trial in range(min(num_trials, 50)):  # Limit to 50 trials
+    for trial in range(min(num_trials, 50)):  
         # Random hyperparameter combination
         hyperparams = {}
         for param_name, param_list in HYPERPARAMETER_GRID.items():
@@ -653,8 +653,6 @@ def hyperparameter_search(features_df, model_name, model_prefix, num_folds=5, nu
     print(f"  Dropout Rate: {best_hyperparams['dropout_rate']}")
     print(f"  Hidden Dim 1: {best_hyperparams['hidden_dim_1']}")
     print(f"  Hidden Dim 2: {best_hyperparams['hidden_dim_2']}")
-    #print(f"  Label Smoothing: {best_hyperparams['label_smoothing']}")
-    #print(f"  Batch Size: {best_hyperparams['batch_size']}")
     print(f"Best AUC (Fold 0): {best_auc:.4f}")
     print(f"{'='*70}\n")
     
@@ -674,7 +672,7 @@ if __name__ == "__main__":
     
     # ===== SELECT BALANCING METHOD =====
     # Choose one of: 'class_weights', 'undersampling', 'baseline'
-    BALANCING_METHOD = 'baseline'  # Change this to compare different methods
+    BALANCING_METHOD = 'baseline' 
     
     print("\n" + "="*80)
     print(" "*15 + "MLP-V1: MULTI-FEATURE CLASSIFICATION (5-FOLD CV)")
@@ -799,49 +797,7 @@ if __name__ == "__main__":
     all_csv = output_dir / 'results_all_models_baseline.csv'
     final_results_df.to_csv(all_csv, index=False)
     print(f"  ✓ {all_csv.name}")
-    
-    # # [COMMENTED OUT] Old output files with undersampling
-    # # print(f"\nSaving results CSVs (with UNDERSAMPLING method)...")
-    # # output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
-    # # output_dir.mkdir(exist_ok=True, parents=True)
-    # # 
-    # # model_prefixes = {
-    # #     'Basic Features': '01_basic_undersample',
-    # #     'Advanced Features': '02_advanced_undersample',
-    # #     'Combined Features': '03_combined_undersample'
-    # # }
-    # # 
-    # # for model_name, prefix in model_prefixes.items():
-    # #     model_df = final_results_df[final_results_df['model'] == model_name.replace('_undersample', '')]
-    # #     csv_path = output_dir / f'{prefix}_{model_name.replace(" ", "_").replace("_undersample", "")}_results.csv'
-    # #     model_df.to_csv(csv_path, index=False)
-    # #     print(f"  ✓ {csv_path.name}")
-    # # 
-    # # # Save all models combined with undersample identifier
-    # # all_csv = output_dir / 'results_all_models_undersample.csv'
-    # # final_results_df.to_csv(all_csv, index=False)
-    # # print(f"  ✓ {all_csv.name}")
-    
-    # # [COMMENTED OUT] Old output files (without undersampling)
-    # # output_dir = Path('/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/tapping_model/results')
-    # # output_dir.mkdir(exist_ok=True, parents=True)
-    # # 
-    # # model_prefixes = {
-    # #     'Basic Features': '01_basic',
-    # #     'Advanced Features': '02_advanced',
-    # #     'Combined Features': '03_combined'
-    # # }
-    # # 
-    # # for model_name, prefix in model_prefixes.items():
-    # #     model_df = final_results_df[final_results_df['model'] == model_name]
-    # #     csv_path = output_dir / f'{prefix}_{model_name.replace(" ", "_")}_results.csv'
-    # #     model_df.to_csv(csv_path, index=False)
-    # #     print(f"  ✓ {csv_path.name}")
-    # # 
-    # # # Save all models combined
-    # # all_csv = output_dir / 'results_all_models.csv'
-    # # final_results_df.to_csv(all_csv, index=False)
-    # # print(f"  ✓ {all_csv.name}")
+
     
     # Find best model based on mean AUC
     mean_results_df = final_results_df[final_results_df['fold'] == 'MEAN']

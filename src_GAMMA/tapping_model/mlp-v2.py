@@ -47,9 +47,9 @@ import matplotlib.gridspec as gridspec
 import seaborn as sns
 
 # ===== Paths and Configurations =====
-train_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_train.csv"
-valtest_split_path = "/mloscratch/users/clerget/data/data_paired/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_10fold_val_test.csv"
-labels_path = "/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
+train_split_path = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
+valtest_split_path = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
+labels_path = "/tremor2tensor/src_GAMMA/paired_healthcode.csv"
 combined_features_path = "/mloscratch/users/clerget/data/csv/tapping_combined_features_session.csv"
 
 NUM_FOLDS = 5
@@ -564,7 +564,7 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
     
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     
-    # Optional: Dynamic Learning Rate Scheduler
+    # Dynamic Learning Rate Scheduler
     if use_scheduler:
         print("\n[SCHEDULER] Dynamic Learning Rate (ReduceLROnPlateau):")
         print("  ├─ Mode: max (increase LR when metric improves)")
@@ -572,10 +572,10 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
         print("  ├─ Patience: 5 epochs")
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, 
-            mode='max',  # Maximize validation AUC
-            factor=0.5,  # Reduce LR by 50%
-            patience=5,  # Wait 5 epochs before reducing
-            min_lr=1e-6  # Don't go below this LR
+            mode='max',  
+            factor=0.5,  
+            patience=5,  
+            min_lr=1e-6  
         )
     else:
         scheduler = None
@@ -635,7 +635,7 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
         if val_auc > best_val_auc:
             best_val_auc = val_auc
             patience_counter = 0
-            best_model_state = model.state_dict().copy()  # Save best model based on VAL
+            best_model_state = model.state_dict().copy()  
         else:
             patience_counter += 1
             if patience_counter >= patience:
@@ -662,7 +662,7 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
             test_labels.extend(y_batch.numpy().tolist())
     
     # Aggregate to patient-level
-    patient_preds = aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='majority')
+    patient_preds = aggregate_predictions(test_df, test_preds_proba, test_preds_binary, test_labels, aggregation_method='mean')
     
     patient_accuracy = accuracy_score(patient_preds['label'], patient_preds['pred_binary'])
     patient_f1 = f1_score(patient_preds['label'], patient_preds['pred_binary'])
@@ -684,7 +684,7 @@ def train_and_evaluate(features_df, model_name, model_prefix, fold=0, hyperparam
         'dropout_rate': dropout_rate,
         'hidden_dim_1': hidden_dim_1,
         'hidden_dim_2': hidden_dim_2,
-        'model_state': best_model_state,  # Include model state for potential saving
+        'model_state': best_model_state,  
     }
 
 
@@ -723,7 +723,6 @@ if __name__ == "__main__":
               f"h2={hyperparams['hidden_dim_2']}")
         print(f"{'='*80}")
         
-        # Loop through all 5 folds
         for fold in range(NUM_FOLDS):
             print(f"\n  FOLD {fold}/{NUM_FOLDS - 1}")
             
@@ -738,16 +737,13 @@ if __name__ == "__main__":
             )
             all_results.append(result)
     
-    # Convert all results to DataFrame
     results_df = pd.DataFrame(all_results)
     
-    # Extract model states before converting to DataFrame (since state dicts can't be in DataFrame)
     model_states = {}
     for idx, result in enumerate(all_results):
         key = f"{result['model']}_fold{result['fold']}"
         model_states[key] = result.pop('model_state')
     
-    # Calculate mean metrics for each hyperparameter combination
     print("\n" + "="*80)
     print("HYPERPARAMETER GRID SEARCH RESULTS")
     print("="*80)
@@ -844,7 +840,6 @@ if __name__ == "__main__":
             torch.save(model_states[model_key], model_save_path)
             print(f"  ✓ Fold {fold_number}: AUC={row['auc']:.4f}, saved to {model_save_path.name}")
     
-    # Generate best model summary visualization
     create_best_model_summary(best_row, best_hp_results, output_dir, balancing_method=BALANCING_METHOD)
     
     print("="*80)
