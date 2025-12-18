@@ -63,9 +63,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 # ===== Paths and Configurations =====
-train_split_path = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
-valtest_split_path = "/tremor2tensor/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
-labels_path = "/tremor2tensor/src_GAMMA/paired_healthcode.csv"
+train_split_path = "/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_train.csv"
+valtest_split_path = "/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/5_fold_CV/processed_paired/paired_splits/balanced_train/healthcode_5fold_val_test.csv"
+labels_path = "/mloscratch/users/clerget/NeuroMeditron/src_GAMMA/paired_healthcode.csv"
 
 basic_features_path = "/mloscratch/users/clerget/data/csv/tapping_statistical_features_session.csv"
 advanced_features_path = "/mloscratch/users/clerget/data/csv/tapping_advanced_features_session.csv"
